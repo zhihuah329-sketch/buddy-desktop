@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+build/
+packages/*/dist/
+*.tgz
+installer-stage/
+
+# ---------------------------------------------------------------
+# Credentials and account data. None of this may ever be committed:
+# the encrypted store is useless without its key, and the key alone
+# is enough to read every token inside it.
+# ---------------------------------------------------------------
+accounts.enc
+vault.key
+vault.key.*
+*.key
+*.enc
+.buddyhub/
+.buddy-desktop/
+.dsh-command-buddy-connect/
+.buddy-connect/
+settings.json
+
+# A stored API key or a captured credential, however it is named.
+*.credentials
+credentials.json
+*credential*.json
+*.token
+token.json
+.env
+.env.*
+
+# Editors and operating system noise
+.vscode/
+.idea/
+*.log
+Thumbs.db
+Desktop.ini
+.DS_Store

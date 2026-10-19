@@ -1,0 +1,121 @@
+/*
+ * Theme tokens.
+ *
+ * Every colour in the app comes from this file, in two sets: a dark surface and a
+ * light one. Components never name a colour directly — they read a token — so a
+ * theme switch is a swap of these variables and nothing else.
+ *
+ * The light set is not the dark set inverted. Darkness carries depth on a dark
+ * surface through raised fills; on white it has to come from borders and very light
+ * greys, so the values are chosen for their own contrast rather than mirrored.
+ */
+
+:root {
+  /* Fallback before the theme attribute is applied: dark, the default. */
+  --bg-base: #0b0d10;
+  --bg-deep: #0f1216;
+  --bg-card: #14181d;
+  --bg-raised: #1a1f26;
+  --bg-input: #10141a;
+
+  --line: #232a33;
+  --line-soft: #1b2129;
+  --line-strong: #333d4a;
+
+  --ink: #e8ecf1;
+  --ink-mid: #9aa6b4;
+  --ink-dim: #67717f;
+
+  --good: #45d17a;
+  --good-glow: rgba(69, 209, 122, 0.1);
+  --warn: #e3a83a;
+  --warn-glow: rgba(227, 168, 58, 0.1);
+  --bad: #f2564d;
+  --bad-glow: rgba(242, 86, 77, 0.1);
+
+  --cn: #4c9aff;
+  --cn-soft: rgba(76, 154, 255, 0.1);
+  --ai: #a970ff;
+  --ai-soft: rgba(169, 112, 255, 0.1);
+
+  --shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  --wash: rgba(76, 154, 255, 0.045);
+
+  color-scheme: dark;
+}
+
+/* Dark: explicit, so a user can pin it against a light system setting. */
+:root[data-theme='dark'] {
+  --bg-base: #0b0d10;
+  --bg-deep: #0f1216;
+  --bg-card: #14181d;
+  --bg-raised: #1a1f26;
+  --bg-input: #10141a;
+
+  --line: #232a33;
+  --line-soft: #1b2129;
+  --line-strong: #333d4a;
+
+  --ink: #e8ecf1;
+  --ink-mid: #9aa6b4;
+  --ink-dim: #67717f;
+
+  --good: #45d17a;
+  --good-glow: rgba(69, 209, 122, 0.1);
+  --warn: #e3a83a;
+  --warn-glow: rgba(227, 168, 58, 0.1);
+  --bad: #f2564d;
+  --bad-glow: rgba(242, 86, 77, 0.1);
+
+  --cn: #4c9aff;
+  --cn-soft: rgba(76, 154, 255, 0.1);
+  --ai: #a970ff;
+  --ai-soft: rgba(169, 112, 255, 0.1);
+
+  --shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+  --wash: rgba(76, 154, 255, 0.045);
+
+  color-scheme: dark;
+}
+
+/*
+ * Light.
+ *
+ * Depth here has to come from borders, not from fills: a raised white block on white
+ * is invisible. Greys are therefore tinted slightly cool so they read as a surface
+ * rather than as dirty white, and the accent, status and region colours are darkened
+ * until they pass on white — the dark theme's bright green is unreadable there.
+ */
+:root[data-theme='light'] {
+  --bg-base: #f6f7f9;
+  --bg-deep: #ffffff;
+  --bg-card: #ffffff;
+  --bg-raised: #f2f4f7;
+  --bg-input: #f8f9fb;
+
+  --line: #e2e6ec;
+  --line-soft: #eceff3;
+  --line-strong: #cfd6df;
+
+  --ink: #16191d;
+  --ink-mid: #5a6472;
+  --ink-dim: #8a94a2;
+
+  --good: #1a7f45;
+  --good-glow: rgba(26, 127, 69, 0.08);
+  --warn: #9a6600;
+  --warn-glow: rgba(154, 102, 0, 0.08);
+  --bad: #c0352b;
+  --bad-glow: rgba(192, 53, 43, 0.07);
+
+  --cn: #1f6feb;
+  --cn-soft: rgba(31, 111, 235, 0.08);
+  --ai: #7c3aed;
+  --ai-soft: rgba(124, 58, 237, 0.07);
+
+  /* Softer on white; a dark shadow would look like a smudge. */
+  --shadow: 0 6px 18px rgba(16, 24, 40, 0.1);
+  --wash: rgba(31, 111, 235, 0.035);
+
+  color-scheme: light;
+}

@@ -1,0 +1,15 @@
+{
+  "name": "@buddy-desktop/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Account pool, credential reading, quota rotation and check-in — framework-free, shared by the desktop app and the CLI.",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./*": "./src/*.js"
+  },
+  "scripts": {
+    "probe": "node ../../probe-credential.mjs"
+  }
+}

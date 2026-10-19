@@ -1,0 +1,17 @@
+{
+  "name": "@buddy-desktop/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local HTTP API, model forwarding and static host for the desktop app.",
+  "main": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "bin": {
+    "buddy-desktop": "./src/cli.js"
+  },
+  "dependencies": {
+    "@buddy-desktop/core": "workspace:*"
+  }
+}

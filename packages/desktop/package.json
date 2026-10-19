@@ -1,0 +1,14 @@
+{
+  "name": "@buddy-desktop/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The desktop window: an Electron shell around the app's own server.",
+  "main": "./src/main.cjs",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "@buddy-desktop/core": "workspace:*",
+    "@buddy-desktop/server": "workspace:*"
+  }
+}
