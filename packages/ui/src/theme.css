@@ -40,6 +40,8 @@
 
   --shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
   --wash: rgba(76, 154, 255, 0.045);
+  --mark-from: #26313f;
+  --mark-to: #171d25;
 
   color-scheme: dark;
 }
@@ -74,6 +76,8 @@
 
   --shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
   --wash: rgba(76, 154, 255, 0.045);
+  --mark-from: #26313f;
+  --mark-to: #171d25;
 
   color-scheme: dark;
 }
@@ -116,6 +120,8 @@
   /* Softer on white; a dark shadow would look like a smudge. */
   --shadow: 0 6px 18px rgba(16, 24, 40, 0.1);
   --wash: rgba(31, 111, 235, 0.035);
+  --mark-from: #eef2f8;
+  --mark-to: #e3e9f2;
 
   color-scheme: light;
 }

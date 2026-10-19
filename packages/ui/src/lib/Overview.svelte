@@ -1,15 +1,20 @@
 <script>
   /**
-   * The overview page.
+   * The overview.
    *
-   * The only page where the two regions appear together, and only as a summary:
-   * counts, health, and a way into each region's own page. It deliberately offers
-   * no actions — anything that changes state belongs to the region it changes.
+   * The first thing the window shows, so it answers three questions before anything
+   * else: is the service on, which regions are serving, and is anything wrong. The
+   * switches live here because they are the one control a user reaches for without
+   * knowing which account is which.
+   *
+   * The two regions appear together on this page and nowhere else, and only as a
+   * summary: anything that changes state belongs to the region's own page.
    */
   import { fly } from 'svelte/transition'
   import { cubicOut } from 'svelte/easing'
+  import Switch from './Switch.svelte'
 
-  let { state, onOpen } = $props()
+  let { appState, switches, busyKey, onToggleSwitch, onOpen } = $props()
 
   const REGIONS = [
     { site: 'cn', title: '国内版', host: 'workbuddy.cn' },
@@ -17,14 +22,14 @@
   ]
 
   function accountsOf(site) {
-    return (state?.accounts ?? []).filter((account) => account.site === site)
+    return (appState?.accounts ?? []).filter((account) => account.site === site)
   }
 
   function usableOf(site) {
     return accountsOf(site).filter((account) => account.usable === true).length
   }
 
-  /** The shape of a region's health, reduced to one tone. */
+  /** The health of a region, reduced to one tone. */
   function toneOf(site) {
     const total = accountsOf(site).length
     if (total === 0) return 'idle'
@@ -41,23 +46,74 @@
     return '已就绪'
   }
 
-  /** Accounts that need attention, across both regions. */
-  const attention = $derived(
-    (state?.accounts ?? []).filter((account) => account.usable !== true)
+  /** Accounts that cannot serve a request right now. */
+  const attention = $derived((appState?.accounts ?? []).filter((account) => account.usable !== true))
+
+  /** Total requests recorded across the pool; the only usage figure the app keeps. */
+  const totalRequests = $derived(
+    (appState?.accounts ?? []).reduce((sum, account) => sum + (account.requests ?? 0), 0)
   )
+
+  /** Whether a region is effectively serving, which accounts for the master switch. */
+  function serving(site) {
+    return switches?.effective?.[site] === true
+  }
+
+  /** A region is on but the master is off: worth saying explicitly. */
+  function blockedByMaster(site) {
+    return switches?.[site] === true && switches?.master === false
+  }
 </script>
 
 <div class="page">
   <header class="page-head">
-    <h1>概览</h1>
-    <span class="sub">两个区域互不影响，也互不回退</span>
+    <div>
+      <h1>概览</h1>
+      <span class="sub">两个区域互不影响，也互不回退</span>
+    </div>
+    <div class="head-state" class:live={switches?.master}>
+      <span class="head-dot"></span>
+      {switches?.master ? '服务运行中' : '服务已停止'}
+    </div>
   </header>
+
+  <!-- The switches come first: they decide whether anything below can be used. -->
+  <section class="block">
+    <div class="block-head">
+      <span class="block-label">服务开关</span>
+      <span class="block-note">关闭后对应的调用会立即失败，不会消耗额度</span>
+    </div>
+    <div class="switch-list">
+      <Switch
+        checked={switches?.master === true}
+        label="服务总开关"
+        description="关闭后两个区域都不再响应模型调用"
+        busy={busyKey === 'switch:master'}
+        disabled={busyKey !== null && busyKey !== 'switch:master'}
+        onToggle={(next) => onToggleSwitch('master', next)}
+      />
+      {#each REGIONS as region (region.site)}
+        <Switch
+          checked={switches?.[region.site] === true}
+          label="{region.title}线路"
+          description={blockedByMaster(region.site)
+            ? '总开关已关闭，打开总开关后才会生效'
+            : `${usableOf(region.site)} 个账号可服务`}
+          tone={region.site}
+          busy={busyKey === `switch:${region.site}`}
+          disabled={busyKey !== null && busyKey !== `switch:${region.site}`}
+          onToggle={(next) => onToggleSwitch(region.site, next)}
+        />
+      {/each}
+    </div>
+  </section>
 
   <div class="cards">
     {#each REGIONS as region, index (region.site)}
       <button
         class="region-card {region.site}"
-        in:fly={{ y: 8, duration: 260, delay: index * 50, easing: cubicOut }}
+        class:muted={!serving(region.site)}
+        in:fly={{ y: 8, duration: 240, delay: index * 45, easing: cubicOut }}
         onclick={() => onOpen(region.site)}
       >
         <div class="rc-head">
@@ -72,28 +128,32 @@
         </div>
 
         <div class="rc-foot">
-          <span class="rc-label {toneOf(region.site)}">{labelOf(region.site)}</span>
+          <span class="rc-label {toneOf(region.site)}">
+            {serving(region.site) ? labelOf(region.site) : '已暂停'}
+          </span>
           <span class="rc-go">打开 →</span>
         </div>
       </button>
     {/each}
   </div>
 
-  {#if state !== null}
+  {#if appState !== null}
     <section class="summary">
       <div class="summary-row">
         <span class="summary-label">账号总数</span>
-        <span class="summary-value">{state.accounts?.length ?? 0}</span>
+        <span class="summary-value">{appState.accounts?.length ?? 0}</span>
       </div>
       <div class="summary-row">
         <span class="summary-label">需要处理</span>
-        <span class="summary-value" class:attn={attention.length > 0}>
-          {attention.length}
-        </span>
+        <span class="summary-value" class:attn={attention.length > 0}>{attention.length}</span>
       </div>
       <div class="summary-row">
-        <span class="summary-label">模型</span>
-        <span class="summary-value">{state.models?.length ?? 0} 个</span>
+        <span class="summary-label">累计请求</span>
+        <span class="summary-value">{totalRequests}</span>
+      </div>
+      <div class="summary-row">
+        <span class="summary-label">签到</span>
+        <span class="summary-value sm">{appState.checkin?.checkin?.status ?? '—'}</span>
       </div>
     </section>
 
@@ -110,7 +170,19 @@
           </div>
         {/each}
       </section>
+    {:else if (appState.accounts?.length ?? 0) > 0}
+      <section class="all-good">
+        <span class="good-dot"></span>
+        全部 {appState.accounts.length} 个账号均可正常服务
+      </section>
     {/if}
+
+    <!-- The endpoint, repeated from settings because it is the value a user copies
+         most often and this is the page they land on. -->
+    <section class="endpoint-strip">
+      <span class="strip-label">接入地址</span>
+      <code class="strip-url">{appState.endpoint}</code>
+    </section>
   {/if}
 </div>
 
@@ -118,17 +190,18 @@
   .page {
     display: flex;
     flex-direction: column;
-    gap: 16px;
-    max-width: 620px;
+    gap: 15px;
+    max-width: 640px;
   }
 
   .page-head {
     display: flex;
-    align-items: baseline;
-    gap: 10px;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 16px;
   }
 
-  h1 {
+  .page-head h1 {
     margin: 0;
     font-size: 17px;
     font-weight: 600;
@@ -136,8 +209,64 @@
   }
 
   .sub {
+    display: block;
+    margin-top: 2px;
     font-size: 11px;
     color: var(--ink-dim);
+  }
+
+  .head-state {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 10px;
+    border-radius: 99px;
+    border: 1px solid var(--line);
+    font-size: 10.5px;
+    color: var(--ink-dim);
+  }
+
+  .head-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ink-dim);
+  }
+
+  .head-appState.live {
+    color: var(--good);
+    border-color: rgba(69, 209, 122, 0.3);
+    background: var(--good-glow);
+  }
+
+  .head-appState.live .head-dot {
+    background: var(--good);
+  }
+
+  .block-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 7px;
+  }
+
+  .block-label {
+    font-size: 11px;
+    color: var(--ink-mid);
+    letter-spacing: 0.2px;
+  }
+
+  .block-note {
+    font-size: 10px;
+    color: var(--ink-dim);
+    text-align: right;
+  }
+
+  .switch-list {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
   }
 
   .cards {
@@ -150,7 +279,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 13px 14px;
+    padding: 12px 13px;
     border-radius: var(--r-lg);
     border: 1px solid var(--line);
     background: var(--bg-card);
@@ -160,13 +289,11 @@
     position: relative;
     overflow: hidden;
     --accent: var(--cn);
-    --accent-soft: var(--cn-soft);
-    transition: border-color 150ms var(--ease), transform 150ms var(--ease);
+    transition: border-color 150ms var(--ease), transform 150ms var(--ease), opacity 150ms var(--ease);
   }
 
   .region-card.ai {
     --accent: var(--ai);
-    --accent-soft: var(--ai-soft);
   }
 
   .region-card::before {
@@ -175,12 +302,18 @@
     inset: 0 0 auto 0;
     height: 2px;
     background: linear-gradient(90deg, transparent, var(--accent), transparent);
-    opacity: 0.5;
+    opacity: 0.45;
   }
 
   .region-card:hover {
-    border-color: #313b48;
+    border-color: var(--line-strong);
     transform: translateY(-1px);
+  }
+
+  /* A paused region keeps its layout but loses its colour: the account count is
+     still true, the availability is not. */
+  .region-card.muted {
+    opacity: 0.55;
   }
 
   .rc-head {
@@ -192,9 +325,9 @@
   .rc-dot {
     width: 7px;
     height: 7px;
+    flex: none;
     border-radius: 50%;
     border: 1.4px solid var(--ink-dim);
-    flex: none;
   }
 
   .rc-dot.good { background: var(--good); border-color: var(--good); }
@@ -209,9 +342,9 @@
   }
 
   .rc-host {
+    margin-left: auto;
     font-size: 10px;
     color: var(--ink-dim);
-    margin-left: auto;
   }
 
   .rc-metric {
@@ -221,7 +354,7 @@
   }
 
   .rc-number {
-    font-size: 26px;
+    font-size: 25px;
     font-weight: 600;
     letter-spacing: -1px;
     line-height: 1;
@@ -274,7 +407,7 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 9px 12px;
+    padding: 9px 11px;
     background: var(--bg-deep);
   }
 
@@ -290,21 +423,26 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .summary-value.sm {
+    font-size: 11.5px;
+    font-weight: 500;
+  }
+
   .summary-value.attn {
     color: var(--warn);
   }
 
   .attention {
-    padding: 11px 13px;
+    padding: 10px 12px;
     border-radius: var(--r-md);
     background: var(--warn-glow);
-    border: 1px solid rgba(227, 168, 58, 0.24);
+    border: 1px solid rgba(227, 168, 58, 0.22);
   }
 
   .attention-title {
-    font-size: 11px;
+    font-size: 10.5px;
     color: var(--warn);
-    margin-bottom: 6px;
+    margin-bottom: 5px;
   }
 
   .attention-row {
@@ -338,5 +476,46 @@
   .attention-state {
     flex: none;
     color: var(--warn);
+  }
+
+  .all-good {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    padding: 9px 12px;
+    border-radius: var(--r-md);
+    background: var(--good-glow);
+    border: 1px solid rgba(69, 209, 122, 0.2);
+    font-size: 11px;
+    color: var(--good);
+  }
+
+  .good-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--good);
+  }
+
+  .endpoint-strip {
+    display: flex;
+    align-items: baseline;
+    gap: 9px;
+    padding: 9px 12px;
+    border-radius: var(--r-md);
+    background: var(--bg-input);
+    border: 1px solid var(--line-soft);
+  }
+
+  .strip-label {
+    flex: none;
+    font-size: 10.5px;
+    color: var(--ink-dim);
+  }
+
+  .strip-url {
+    font-size: 11.5px;
+    color: var(--ink);
+    word-break: break-all;
   }
 </style>

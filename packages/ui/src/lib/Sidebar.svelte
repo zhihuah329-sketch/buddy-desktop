@@ -30,10 +30,12 @@
   /** The pages, in the order they appear. */
   const PAGES = [
     { id: 'overview', label: '概览', icon: 'grid' },
+    { id: 'usage', label: '使用额度', icon: 'chart' },
     { id: 'cn', label: '国内版', icon: 'dot', region: 'cn' },
     { id: 'ai', label: '国际版', icon: 'dot', region: 'ai' },
     { id: 'checkin', label: '每日签到', icon: 'check' },
     { id: 'command-code', label: 'Command Code', icon: 'key' },
+    { id: 'access', label: '接入与密钥', icon: 'link' },
     { id: 'settings', label: '设置', icon: 'gear' }
   ]
 
@@ -97,6 +99,16 @@
               <rect x="1.5" y="9.5" width="5" height="5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4" />
               <rect x="9.5" y="9.5" width="5" height="5" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.4" />
             </svg>
+          {:else if entry.icon === 'chart'}
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path
+                d="M2.4 12.6V7.8M6.1 12.6V4.2M9.9 12.6V9.4M13.6 12.6V2.8"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.5"
+                stroke-linecap="round"
+              />
+            </svg>
           {:else if entry.icon === 'check'}
             <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
               <path
@@ -113,6 +125,23 @@
               <circle cx="5.4" cy="10.6" r="2.6" fill="none" stroke="currentColor" stroke-width="1.4" />
               <path
                 d="M7.4 8.6 12.6 3.4M10.6 5.4l1.6 1.6M12.2 3.8l1.4 1.4"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
+            </svg>
+          {:else if entry.icon === 'link'}
+            <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+              <path
+                d="M6.6 9.4a2.6 2.6 0 0 0 3.7 0l2.1-2.1a2.6 2.6 0 0 0-3.7-3.7l-1 1"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.4"
+                stroke-linecap="round"
+              />
+              <path
+                d="M9.4 6.6a2.6 2.6 0 0 0-3.7 0L3.6 8.7a2.6 2.6 0 0 0 3.7 3.7l1-1"
                 fill="none"
                 stroke="currentColor"
                 stroke-width="1.4"
@@ -232,7 +261,7 @@
     height: 26px;
     border-radius: 8px;
     color: var(--ink-mid);
-    background: linear-gradient(150deg, #26313f, #171d25);
+    background: linear-gradient(150deg, var(--mark-from), var(--mark-to));
     border: 1px solid var(--line);
   }
 

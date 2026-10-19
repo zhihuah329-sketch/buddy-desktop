@@ -40,3 +40,12 @@ token.json
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# ---------------------------------------------------------------
+# One-off scripts used to repair this machine. They hardcode local
+# paths and are of no use to anyone cloning the repository.
+# ---------------------------------------------------------------
+tools/upload.py
+tools/release.py
+tools/verify-remote.py
+tools/fix-sessions.py

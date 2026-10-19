@@ -43,7 +43,7 @@
     background: var(--bg-raised);
     border: 1px solid var(--line);
     color: var(--ink-mid);
-    box-shadow: 0 6px 20px rgba(0, 0, 0, 0.4);
+    box-shadow: var(--shadow);
     white-space: nowrap;
   }
 

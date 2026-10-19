@@ -7,9 +7,49 @@
    * the endpoint is shared: one address serves both regions, and the model name
    * decides which pool is used.
    */
-  let { state, onCopy } = $props()
+  import { fly } from 'svelte/transition'
+  import { cubicOut } from 'svelte/easing'
 
-  const models = $derived((state?.models ?? []).map((model) => ({
+  let { appState, onCopy, onSavePaths } = $props()
+
+  /** Which path field is being edited, if any. */
+  let editing = $state({ cn: false, ai: false })
+  /** The value being typed, so a cancelled edit leaves the stored one untouched. */
+  let draft = $state({ cn: '', ai: '' })
+  /** Which field is saving, so its buttons can show progress. */
+  let saving = $state(null)
+
+  /** Open one field for editing, starting from what is currently in effect. */
+  function edit(site) {
+    draft[site] = site === 'ai'
+      ? (appState?.settings?.workbuddyIntlPath || appState?.clients?.ai?.path || '')
+      : (appState?.settings?.workbuddyPath || appState?.clients?.cn?.path || '')
+    editing[site] = true
+  }
+
+  /** Discard the edit. */
+  function cancel(site) {
+    editing[site] = false
+    draft[site] = ''
+  }
+
+  /** Store the chosen path, or clear it so detection takes over again. */
+  async function save(site) {
+    if (saving !== null) return
+    saving = site
+    try {
+      const value = draft[site].trim()
+      await onSavePaths(
+        site === 'ai' ? { workbuddyIntlPath: value } : { workbuddyPath: value }
+      )
+      editing[site] = false
+      draft[site] = ''
+    } finally {
+      saving = null
+    }
+  }
+
+  const models = $derived((appState?.models ?? []).map((model) => ({
     model,
     region: model.endsWith('-ai') ? '国际版' : '国内版',
     site: model.endsWith('-ai') ? 'ai' : 'cn'
@@ -32,7 +72,7 @@
     <div class="field">
       <span class="field-key">地址</span>
       <div class="field-value">
-        <code class="url">{state?.endpoint ?? '—'}</code>
+        <code class="url">{appState?.endpoint ?? '—'}</code>
         <button class="copy" onclick={onCopy}>复制</button>
       </div>
     </div>
@@ -52,28 +92,69 @@
     <div class="field">
       <span class="field-key">账号库</span>
       <div class="field-value">
-        <code class="wrap">{state?.dataDir ?? '—'}</code>
+        <code class="wrap">{appState?.dataDir ?? '—'}</code>
       </div>
     </div>
     <div class="field">
       <span class="field-key">国内版客户端</span>
       <div class="field-value">
-        {#if state?.clients?.cn?.path}
-          <code class="wrap">{state.clients.cn.path}</code>
+        {#if editing.cn}
+          <input
+            class="path-input"
+            placeholder="选择 WorkBuddy.exe"
+            bind:value={draft.cn}
+            onkeydown={(event) => {
+              if (event.key === 'Enter') save('cn')
+              if (event.key === 'Escape') cancel('cn')
+            }}
+          />
+          <button class="mini primary" disabled={saving === 'cn'} onclick={() => save('cn')}>
+            {saving === 'cn' ? '保存中' : '保存'}
+          </button>
+          <button class="mini" disabled={saving === 'cn'} onclick={() => cancel('cn')}>取消</button>
+        {:else if appState?.clients?.cn?.path}
+          <code class="wrap path-text">{appState.clients.cn.path}</code>
+          <span class="source-tag" class:custom={appState?.settings?.workbuddyPath}>
+            {appState?.settings?.workbuddyPath ? '手动指定' : '自动检测'}
+          </span>
+          <button class="mini" onclick={() => edit('cn')}>修改</button>
         {:else}
-          <span class="missing">{state?.clients?.cn?.hint ?? '未检测到'}</span>
+          <span class="missing">{appState?.clients?.cn?.hint ?? '未检测到'}</span>
+          <button class="mini primary" onclick={() => edit('cn')}>手动选择</button>
         {/if}
       </div>
     </div>
     <div class="field">
       <span class="field-key">国际版客户端</span>
       <div class="field-value">
-        {#if state?.clients?.ai?.path}
-          <code class="wrap">{state.clients.ai.path}</code>
+        {#if editing.ai}
+          <input
+            class="path-input"
+            placeholder="选择 WorkBuddyAI.exe"
+            bind:value={draft.ai}
+            onkeydown={(event) => {
+              if (event.key === 'Enter') save('ai')
+              if (event.key === 'Escape') cancel('ai')
+            }}
+          />
+          <button class="mini primary" disabled={saving === 'ai'} onclick={() => save('ai')}>
+            {saving === 'ai' ? '保存中' : '保存'}
+          </button>
+          <button class="mini" disabled={saving === 'ai'} onclick={() => cancel('ai')}>取消</button>
+        {:else if appState?.clients?.ai?.path}
+          <code class="wrap path-text">{appState.clients.ai.path}</code>
+          <span class="source-tag" class:custom={appState?.settings?.workbuddyIntlPath}>
+            {appState?.settings?.workbuddyIntlPath ? '手动指定' : '自动检测'}
+          </span>
+          <button class="mini" onclick={() => edit('ai')}>修改</button>
         {:else}
-          <span class="missing">{state?.clients?.ai?.hint ?? '未检测到'}</span>
+          <span class="missing">{appState?.clients?.ai?.hint ?? '未检测到'}</span>
+          <button class="mini primary" onclick={() => edit('ai')}>手动选择</button>
         {/if}
       </div>
+    </div>
+    <div class="path-hint">
+      客户端装在其它磁盘或自定义目录时，在这里指定具体路径。指定的路径优先于自动检测。
     </div>
   </section>
 
@@ -195,12 +276,88 @@
 
   .copy:hover {
     color: var(--ink);
-    border-color: #333d4a;
+    border-color: var(--line-strong);
   }
 
   .missing {
     font-size: 11.5px;
     color: var(--warn);
+  }
+
+  /* The path is editable, so it needs to look like a value the user owns rather
+     than a read-only diagnostic. */
+  .path-text {
+    font-size: 11px;
+    color: var(--ink);
+  }
+
+  .path-input {
+    flex: 1;
+    min-width: 0;
+    padding: 5px 9px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--cn);
+    background: var(--bg-input);
+    color: var(--ink);
+    font: inherit;
+    font-size: 11px;
+    outline: none;
+  }
+
+  .path-input::placeholder {
+    color: var(--ink-dim);
+  }
+
+  .source-tag {
+    flex: none;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 9.5px;
+    color: var(--ink-dim);
+    border: 1px solid var(--line);
+  }
+
+  .source-tag.custom {
+    color: var(--cn);
+    border-color: rgba(76, 154, 255, 0.3);
+    background: var(--cn-soft);
+  }
+
+  .mini {
+    flex: none;
+    padding: 2px 8px;
+    border-radius: 5px;
+    border: 1px solid var(--line);
+    background: var(--bg-raised);
+    color: var(--ink-mid);
+    font: inherit;
+    font-size: 10px;
+    cursor: pointer;
+    transition: color 130ms var(--ease), border-color 130ms var(--ease);
+  }
+
+  .mini:hover:not(:disabled) {
+    color: var(--ink);
+    border-color: var(--line-strong);
+  }
+
+  .mini.primary {
+    color: var(--cn);
+    border-color: rgba(76, 154, 255, 0.35);
+    background: var(--cn-soft);
+  }
+
+  .mini:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
+
+  .path-hint {
+    margin-top: 7px;
+    padding: 0 11px;
+    font-size: 10px;
+    color: var(--ink-dim);
+    line-height: 1.55;
   }
 
   .facts {

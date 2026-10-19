@@ -278,7 +278,7 @@
 
   .btn:hover:not(:disabled) {
     color: var(--ink);
-    border-color: #333d4a;
+    border-color: var(--line-strong);
   }
 
   .btn:disabled {

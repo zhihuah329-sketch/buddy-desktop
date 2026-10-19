@@ -154,6 +154,9 @@ cpSync(join(ROOT, 'packages', 'desktop', 'src', 'main.cjs'), join(appDir, 'main.
 
 // The server, core and page travel inside the asar-less tree, which Electron loads
 // directly: no packing step is needed, and a stack trace still points at real files.
+// The provider plugin is generated at install time from plugin-source.js, because
+// its manifest has to match the harness on the target machine. Nothing to copy here.
+
 for (const [name, source] of [
   ['server', join(ROOT, 'packages', 'server')],
   ['core', join(ROOT, 'packages', 'core')],

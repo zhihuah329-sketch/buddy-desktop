@@ -402,8 +402,8 @@
 
   .btn:hover:not(:disabled) {
     color: var(--ink);
-    border-color: #333d4a;
-    background: #1e242c;
+    border-color: var(--line-strong);
+    background: var(--bg-raised);
   }
 
   .btn:disabled {

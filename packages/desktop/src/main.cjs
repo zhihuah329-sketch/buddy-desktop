@@ -227,10 +227,36 @@ if (app.requestSingleInstanceLock() === false) {
       running = await serverModule.startServer({ port: PORT })
       trace(`server listening at ${running.url}`)
     } catch (error) {
-      trace(`server start failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
-      dialog.showErrorBox('启动失败', `无法启动本地服务：${error instanceof Error ? error.message : String(error)}`)
-      app.quit()
-      return
+      const message = error instanceof Error ? error.message : String(error)
+      trace(`server start failed: ${message}`)
+
+      // A second copy, or another program, may already hold the port. Refusing to
+      // start would leave the user with an error box and nothing to act on, so the
+      // next few ports are tried before giving up.
+      let recovered = false
+      if (message.includes('EADDRINUSE')) {
+        for (const candidate of [PORT + 1, PORT + 2, PORT + 3, 0]) {
+          try {
+            running = await serverModule.startServer({ port: candidate })
+            trace(`recovered on port ${running.port}`)
+            recovered = true
+            break
+          } catch {
+            // Try the next one.
+          }
+        }
+      }
+
+      if (!recovered) {
+        dialog.showErrorBox(
+          '启动失败',
+          message.includes('EADDRINUSE')
+            ? `端口 ${PORT} 已被占用，且备用端口也不可用。\n\n请关闭占用该端口的程序后重试。`
+            : `无法启动本地服务：${message}`
+        )
+        app.quit()
+        return
+      }
     }
 
     pageUrl = running.url

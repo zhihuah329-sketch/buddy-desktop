@@ -15,6 +15,8 @@
   import Settings from './lib/Settings.svelte'
   import CommandCode from './lib/CommandCode.svelte'
   import Checkin from './lib/Checkin.svelte'
+  import Usage from './lib/Usage.svelte'
+  import Access from './lib/Access.svelte'
   import Toasts from './lib/Toasts.svelte'
   import { createClient } from './lib/client.js'
   import { MODES, applyMode, initialMode, onSystemChange } from './lib/theme.js'
@@ -49,7 +51,7 @@
   /** The most recent state document, or null before the first load. */
   let state = $state(null)
   /** Every page the shell can show. */
-  const PAGE_IDS = ['overview', 'cn', 'ai', 'checkin', 'command-code', 'settings']
+  const PAGE_IDS = ['overview', 'usage', 'cn', 'ai', 'checkin', 'command-code', 'access', 'settings']
 
   /** The page named by the URL hash, or the overview. */
   function pageFromHash() {
@@ -79,6 +81,16 @@
   let toasts = $state([])
   /** The running action, as `kind:site`. */
   let busy = $state(null)
+  /** Access keys, without their secrets. */
+  let keys = $state([])
+  /** What an import into DeepSeek Harness would change. */
+  let importReport = $state(null)
+  /** Which access action is running. */
+  let accessBusy = $state(null)
+
+  /** Usage and quota, or null before the first read. */
+  let usage = $state(null)
+
   /** The most recent scan, kept until the next one. */
   let scanResult = $state(null)
 
@@ -123,6 +135,14 @@
       state = await client.fetchState()
     } catch (error) {
       if (!quiet) toast('bad', error.message)
+    }
+    // Usage is a second read because it depends on the same pool; a failure here
+    // must not blank the page that already loaded.
+    try {
+      const reply = await client.fetchUsage()
+      usage = reply.usage ?? null
+    } catch {
+      // A failure leaves whatever was already shown; a blank page would be worse.
     }
   }
 
@@ -260,6 +280,127 @@
     }
   }
 
+  /** Set one service switch, then adopt the state the server reports. */
+  async function onToggleSwitch(name, enabled) {
+    if (busy !== null) return
+    busy = `switch:${name}`
+    try {
+      const result = await client.setSwitch(name, enabled)
+      if (result.ok === true) {
+        // The reply carries the whole switch state, including the effective answer
+        // for each region, so it can replace rather than patch.
+        state = state === null ? state : { ...state, switches: result.switches }
+        const LABELS = { master: '服务总开关', cn: '国内版线路', ai: '国际版线路' }
+        toast(enabled ? 'good' : 'warn', `${LABELS[name] ?? name}已${enabled ? '开启' : '关闭'}`)
+      } else {
+        toast('bad', result.error ?? '切换失败')
+      }
+    } catch (error) {
+      toast('bad', error.message)
+    } finally {
+      busy = null
+    }
+  }
+
+  /** Re-read just the usage figures. */
+  async function onRefreshUsage() {
+    if (busy !== null) return
+    busy = 'usage'
+    try {
+      const reply = await client.fetchUsage()
+      usage = reply.usage ?? null
+      toast('good', '额度已刷新')
+    } catch (error) {
+      toast('bad', error.message)
+    } finally {
+      busy = null
+    }
+  }
+
+  async function onCreateKey(label, scope) {
+    if (accessBusy !== null) return null
+    accessBusy = 'key'
+    try {
+      const result = await client.createKey(label, scope)
+      if (result.ok === true) {
+        keys = result.keys ?? keys
+        toast('good', '密钥已创建，请立即复制保存')
+        return result.key
+      }
+      toast('bad', result.error ?? '创建失败')
+      return null
+    } catch (error) {
+      toast('bad', error.message)
+      return null
+    } finally {
+      accessBusy = null
+    }
+  }
+
+  async function onUpdateKey(id, changes) {
+    if (accessBusy !== null) return
+    accessBusy = 'key'
+    try {
+      const result = await client.updateKey(id, changes)
+      if (result.ok === true) {
+        keys = result.keys ?? keys
+        toast('good', changes.remove === true ? '密钥已删除' : '密钥状态已更新')
+      } else {
+        toast('bad', result.error ?? '操作失败')
+      }
+    } catch (error) {
+      toast('bad', error.message)
+    } finally {
+      accessBusy = null
+    }
+  }
+
+  async function onRefreshImport() {
+    if (accessBusy !== null) return
+    accessBusy = 'import'
+    try {
+      const result = await client.fetchImport()
+      importReport = result.report ?? null
+    } catch (error) {
+      toast('bad', error.message)
+    } finally {
+      accessBusy = null
+    }
+  }
+
+    async function onWriteImport() {
+    if (accessBusy !== null) return
+    accessBusy = 'import'
+    try {
+      const result = await client.runImport()
+      importReport = result.report ?? importReport
+      if (result.ok === true) {
+        toast(result.changed === false ? 'warn' : 'good', result.message ?? '已完成')
+      } else {
+        toast('bad', result.error ?? '写入失败')
+      }
+    } catch (error) {
+      toast('bad', error.message)
+    } finally {
+      accessBusy = null
+    }
+  }
+
+  /** Store a chosen client path, then re-read so the page reflects what took effect. */
+  async function onSavePaths(changes) {
+    try {
+      const result = await client.saveSettings(changes)
+      if (result.ok === true) {
+        state = result.state ?? state
+        toast('good', '路径已保存')
+      } else {
+        toast('bad', result.error ?? '保存失败')
+      }
+    } catch (error) {
+      toast('bad', error.message)
+    }
+  }
+
   async function onCopyEndpoint() {
     const value = state?.endpoint
     if (typeof value !== 'string' || value.length === 0) return
@@ -278,6 +419,15 @@
 
   onMount(() => {
     window.addEventListener('hashchange', onHashChange)
+
+    // Read once at start: the key list decides whether the endpoint is protected,
+    // and the import report is what the access page opens with.
+    client.fetchKeys().then((reply) => {
+      keys = reply.keys ?? []
+    }).catch(() => {})
+    client.fetchImport().then((reply) => {
+      importReport = reply.report ?? null
+    }).catch(() => {})
 
     // Applied again here rather than only in main.js so a mode change made while
     // the app is open is re-applied after a reload for the right reasons.
@@ -315,9 +465,22 @@
     {#key page}
       <div class="page-wrap" in:fade={{ duration: 170 }} out:fade={{ duration: 90 }}>
         {#if page === 'overview'}
-          <Overview {state} onOpen={(site) => go(site)} />
+          <Overview
+            appState={state}
+            switches={state?.switches ?? null}
+            busyKey={busy}
+            onToggleSwitch={onToggleSwitch}
+            onOpen={(site) => go(site)}
+          />
+        {:else if page === 'usage'}
+          <Usage
+            appState={state}
+            {usage}
+            busy={busy === 'usage'}
+            onRefresh={onRefreshUsage}
+          />
         {:else if page === 'checkin'}
-          <Checkin {state} busyKind={busy} onRun={onRunCheckin} />
+          <Checkin appState={state} busyKind={busy} onRun={onRunCheckin} />
         {:else if page === 'command-code'}
           <CommandCode
             appState={state}
@@ -326,8 +489,20 @@
             onTest={onTestCommandCode}
             onClearKey={onClearCommandCodeKey}
           />
+        {:else if page === 'access'}
+          <Access
+            appState={state}
+            {keys}
+            keyBusy={accessBusy === 'key'}
+            {importReport}
+            importBusy={accessBusy === 'import'}
+            onCreateKey={onCreateKey}
+            onUpdateKey={onUpdateKey}
+            onImport={onWriteImport}
+            onRefreshImport={onRefreshImport}
+          />
         {:else if page === 'settings'}
-          <Settings {state} onCopy={onCopyEndpoint} />
+          <Settings appState={state} onCopy={onCopyEndpoint} onSavePaths={onSavePaths} />
         {:else if regionOf(page) !== undefined}
           <RegionPanel
             region={regionOf(page)}

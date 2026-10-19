@@ -58,6 +58,29 @@ export function createClient() {
     importAll: (site) => request('/import', { method: 'POST', body: site ? { site } : {} }),
     /** Read a credential straight out of the installed desktop app. */
     readFromDesktop: (site) => request('/read-desktop', { method: 'POST', body: { site } }),
+    /** Store the client paths the user chose. */
+    saveSettings: (changes) => request('/settings', { method: 'POST', body: changes }),
+
+    /** Access keys, without their secrets. */
+    fetchKeys: () => request('/keys'),
+    /** Create a key; the plaintext comes back once. */
+    createKey: (label, scope) => request('/keys', { method: 'POST', body: { label, scope } }),
+    /** Enable, disable or delete a key. */
+    updateKey: (id, changes) => request('/keys', { method: 'PATCH', body: { id, ...changes } }),
+    /** What an import into DeepSeek Harness would change. */
+    fetchPlugin: () => request('/plugin'),
+
+  installPlugin: () => request('/plugin', { method: 'POST', body: {} }),
+
+  fetchImport: () => request('/dsh-import'),
+    /** Write the configuration DeepSeek Harness needs. */
+    runImport: () => request('/dsh-import', { method: 'POST', body: {} }),
+
+    /** Usage and quota across every account. */
+    fetchUsage: () => request('/usage'),
+    /** Set one of the service switches: master, cn or ai. */
+    setSwitch: (name, enabled) => request('/switches', { method: 'POST', body: { name, enabled } }),
+
     /** The last check-in result. */
     fetchCheckin: () => request('/checkin'),
     /** Run a check-in cycle now. */

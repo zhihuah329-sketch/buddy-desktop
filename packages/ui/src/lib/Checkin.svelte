@@ -12,9 +12,9 @@
   import { fly } from 'svelte/transition'
   import { cubicOut } from 'svelte/easing'
 
-  let { state, busyKind, onRun } = $props()
+  let { appState, busyKind, onRun } = $props()
 
-  const checkin = $derived(state?.checkin ?? null)
+  const checkin = $derived(appState?.checkin ?? null)
   const busy = $derived(busyKind === 'checkin')
 
   /** Outcomes worded for a person, keyed by the value the server reports. */
