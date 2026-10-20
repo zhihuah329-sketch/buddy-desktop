@@ -26,6 +26,16 @@ const { tmpdir } = require('node:os')
 /** Fixed port keeps the forwarding endpoint stable across restarts. */
 const PORT = Number(process.env.BUDDY_DESKTOP_PORT || 5178)
 
+/**
+ * Hardware acceleration is turned off on purpose.
+ *
+ * The window draws text and bars and nothing else, so a compositor buys no visible
+ * smoothness — but its process costs about a hundred megabytes for as long as the app
+ * runs. For a tray application that sits minimised most of the time, that is a poor
+ * trade: rendering in software looks the same and costs a fraction as much.
+ */
+app.disableHardwareAcceleration()
+
 // Electron has no console when launched from a shortcut, so a failure before the
 // window exists would otherwise be invisible. This writes it where it can be read.
 const LOG = join(tmpdir(), 'buddy-desktop-main.log')
@@ -49,6 +59,10 @@ process.on('unhandledRejection', (reason) => {
 let mainWindow = null
 let tray = null
 let running = null
+/** How long a hidden window waits before it hands memory back. */
+const RECLAIM_AFTER_MS = 60_000
+/** The pending reclaim, so showing the window again can cancel it. */
+let reclaimTimer = null
 /** Whether the user asked to quit, so closing the window only hides it. */
 let quitting = false
 /** Set once the server is up, so a late `activate` can still open a window. */
@@ -137,7 +151,12 @@ function createWindow(url) {
       // The page needs no Node access: everything it does goes through the server.
       nodeIntegration: false,
       contextIsolation: true,
-      sandbox: true
+      sandbox: true,
+      // The page is live state that is refreshed on every poll, so a background
+      // window has nothing to animate. Letting Chromium suspend it is what keeps a
+      // minimised app from holding a full renderer's worth of memory awake.
+      backgroundThrottling: true,
+      spellcheck: false
     }
   })
 
@@ -160,7 +179,38 @@ function createWindow(url) {
     }
   })
 
+  // A hidden window is not idle: Chromium keeps its heaps and caches regardless. This
+  // asks it to hand back what it can once the window has been out of sight for a
+  // while, which is the state this app spends most of its life in. The window is still
+  // created, so showing it again is instant — only the unused memory is released.
+  mainWindow.on('hide', () => {
+    if (reclaimTimer !== null) clearTimeout(reclaimTimer)
+    reclaimTimer = setTimeout(() => {
+      reclaimTimer = null
+      if (mainWindow === null || mainWindow.isVisible()) return
+      mainWindow.webContents.session.clearCache().catch(() => {})
+      // Not exposed before the page has finished loading, hence the guard.
+      if (typeof mainWindow.webContents.setBackgroundThrottling === 'function') {
+        mainWindow.webContents.setBackgroundThrottling(true)
+      }
+      trace('reclaimed memory while hidden')
+    }, RECLAIM_AFTER_MS)
+    // Node's timer must not hold the process open on its own.
+    if (typeof reclaimTimer.unref === 'function') reclaimTimer.unref()
+  })
+
+  mainWindow.on('show', () => {
+    if (reclaimTimer !== null) {
+      clearTimeout(reclaimTimer)
+      reclaimTimer = null
+    }
+  })
+
   mainWindow.on('closed', () => {
+    if (reclaimTimer !== null) {
+      clearTimeout(reclaimTimer)
+      reclaimTimer = null
+    }
     mainWindow = null
   })
 }

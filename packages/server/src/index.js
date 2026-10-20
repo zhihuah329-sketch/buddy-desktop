@@ -61,7 +61,7 @@ import { Switches } from './switches.js'
 import { buildUsage } from './usage.js'
 import { forwardToCommandCode } from './cc-forward.js'
 import { readSettings, writeSettings } from './settings.js'
-import { countChars, recordCall, summariseActivity } from './activity.js'
+import { countChars, estimateMessageTokens, estimateTokens, recordCall, summariseActivity } from './activity.js'
 import { createKey, publicKeys, updateKey, verifyKey } from './api-keys.js'
 
 /** Content types for the small set of files this server will serve. */
@@ -787,6 +787,33 @@ async function handleApi(req, url, send, options) {
  * @param options - server options, for the data directory.
  */
 /**
+ * The answer text carried by one chunk of SSE bytes.
+ *
+ * A chunk can hold several frames, or half of one, so anything that does not parse is
+ * skipped rather than throwing: the caller is only measuring, and a torn frame at a
+ * chunk boundary is normal. The bytes are forwarded untouched either way.
+ *
+ * @param chunk - the bytes as they arrived.
+ * @returns the delta text they carried, or an empty string.
+ */
+function readSseDelta(chunk) {
+  const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
+  let collected = ''
+  for (const line of text.split('\n')) {
+    if (!line.startsWith('data:')) continue
+    const data = line.slice(5).trim()
+    if (data.length === 0 || data === '[DONE]') continue
+    try {
+      const delta = JSON.parse(data).choices?.[0]?.delta?.content
+      if (typeof delta === 'string') collected += delta
+    } catch {
+      // A frame split across chunks contributes nothing until its tail arrives.
+    }
+  }
+  return collected
+}
+
+/**
  * Relay an upstream SSE body to the client, in either shape.
  *
  * Command Code answers with frames regardless of what the caller asked for, so the
@@ -913,7 +940,9 @@ async function handleChat(req, res, options) {
       accountId: 'command-code',
       accountLabel: 'Command Code',
       promptChars: countChars(payload.messages),
+      promptTokens: estimateMessageTokens(payload.messages),
       replyChars: null,
+      replyTokens: null,
       ok: true,
       streamed: payload.stream === true,
       elapsedMs: 0
@@ -959,6 +988,7 @@ async function handleChat(req, res, options) {
   // Counted before forwarding: the figure should describe the request that was
   // made, not a copy of it taken afterwards.
   const promptChars = countChars(payload.messages)
+  const promptTokens = estimateMessageTokens(payload.messages)
   const startedAt = Date.now()
 
   // The pool's account objects carry no display name, so it is looked up in the
@@ -995,9 +1025,13 @@ async function handleChat(req, res, options) {
       // Proxies in between must not buffer, or the answer arrives all at once.
       'x-accel-buffering': 'no'
     })
+    // The reply is accumulated as it is pumped through, so the record can report its
+    // size. The bytes still go out untouched, frame by frame.
+    let streamedText = ''
     try {
       for await (const bytes of pumpAnswer(forwarded, controller.signal)) {
         res.write(bytes)
+        streamedText += readSseDelta(bytes)
       }
     } catch (error) {
       // The stream is already in progress, so the only honest report is a final
@@ -1014,7 +1048,10 @@ async function handleChat(req, res, options) {
       accountId: forwarded.account?.id,
       accountLabel: labelById.get(forwarded.account?.id),
       promptChars,
-      replyChars: null,
+      promptTokens,
+      // A stream's reply is accumulated as it goes, so its length is known by now.
+      replyChars: streamedText.length,
+      replyTokens: estimateTokens(streamedText),
       ok: true,
       streamed: true,
       elapsedMs: Date.now() - startedAt
@@ -1051,6 +1088,10 @@ async function handleChat(req, res, options) {
     accountLabel: labelById.get(forwarded.account?.id),
     promptChars,
     replyChars: content.length,
+    // The upstream sends no `usage`, so these are estimated from the characters. The
+    // page labels them "约"; keeping both means the number stays attributable.
+    promptTokens,
+    replyTokens: estimateTokens(content),
     ok: true,
     streamed: false,
     elapsedMs: Date.now() - startedAt

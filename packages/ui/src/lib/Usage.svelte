@@ -6,12 +6,13 @@
    *
    * - Per-account request counts and status come from the pool, which records them
    *   while serving.
-   * - Per-call records — which model answered, which account served it, and how much
-   *   text passed through — come from this app's own call log.
+   * - Per-call records — which model answered, which account served it, and how many
+   *   tokens passed through — come from this app's own call log.
    *
-   * The upstream returns no token counts, so no token figure is shown. Characters
-   * are shown instead, and labelled as such: a made-up token number would be worse
-   * than an honest smaller one.
+   * The upstream returns no `usage` field, so the token counts are estimated from the
+   * characters of each request and reply. They are shown with 「约」 because they are
+   * a count from a rule, not a reading from the service; hiding them behind a plain
+   * number would claim a precision that does not exist.
    */
   import { fly } from 'svelte/transition'
   import { cubicOut } from 'svelte/easing'
@@ -53,11 +54,18 @@
     })
   }
 
-  /** Large character counts as thousands, so a column stays narrow. */
-  function charsText(value) {
-    if (typeof value !== 'number') return '—'
-    if (value >= 10000) return `${(value / 1000).toFixed(1)}k`
+  /** Large counts as thousands, so a column stays narrow. */
+  function countText(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+    if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
+    if (value >= 1000) return `${(value / 1000).toFixed(1)}k`
     return String(value)
+  }
+
+  /** Tokens with the honesty marker: these are estimated, not measured. */
+  function tokensText(value) {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
+    return `约 ${countText(value)}`
   }
 
   function rowsOf(site) {
@@ -76,6 +84,9 @@
   }
 
   const activity = $derived(usage?.activity ?? null)
+
+  /** The busiest model's call count, so the bars are proportional to each other. */
+  const busiest = $derived(activity?.byModel?.[0]?.calls ?? 0)
 </script>
 
 <div class="page">
@@ -104,14 +115,31 @@
         <span class="total-value">{activity?.total ?? 0}</span>
       </div>
       <div class="total">
-        <span class="total-label">池内累计请求</span>
-        <span class="total-value">{usage.total.requests}</span>
+        <span class="total-label">累计 token（约）</span>
+        <span class="total-value">{countText(activity?.tokens?.total ?? 0)}</span>
       </div>
       <div class="total">
         <span class="total-label">成功率</span>
         <span class="total-value">{percent(usage.total.successRate)}</span>
       </div>
     </section>
+
+    {#if activity !== null && activity.total > 0}
+      <!-- The split is what tells a user whether a call was read-heavy or write-heavy,
+           which a single total cannot show. -->
+      <div class="token-split">
+        <span class="split-part">
+          <span class="split-label">输入</span>
+          <b>{tokensText(activity.tokens.prompt)}</b>
+        </span>
+        <span class="split-divider"></span>
+        <span class="split-part">
+          <span class="split-label">输出</span>
+          <b>{tokensText(activity.tokens.reply)}</b>
+        </span>
+        <span class="split-note">按字符估算 · 上游不返回真实 token 数</span>
+      </div>
+    {/if}
 
     {#if !usage.balanceKnown}
       <div class="note">余额需要先签到一次才能读取，去「每日签到」运行一次即可。</div>
@@ -144,10 +172,10 @@
               <li class="bar-row" in:fly={{ y: 4, duration: 180, delay: index * 30, easing: cubicOut }}>
                 <code class="bar-model">{modelText(row.model)}</code>
                 <div class="bar">
-                  <div class="bar-fill" class:ai={row.model.endsWith('-ai')} style="width: {barWidth(row.calls / activity.byModel[0].calls)}"></div>
+                  <div class="bar-fill" class:ai={row.model.endsWith('-ai')} style="width: {barWidth(busiest === 0 ? 0 : row.calls / busiest)}"></div>
                 </div>
                 <span class="bar-count">{row.calls} 次</span>
-                <span class="bar-chars">{charsText(row.chars)} 字符</span>
+                <span class="bar-tokens">{tokensText(row.promptTokens + row.replyTokens)}</span>
               </li>
             {/each}
           </ul>
@@ -162,7 +190,7 @@
                 <span class="acct-site {row.site}">{row.site === 'ai' ? '国际' : '国内'}</span>
                 <span class="acct-name">{row.label}</span>
                 <span class="bar-count">{row.calls} 次</span>
-                <span class="bar-chars">{charsText(row.chars)} 字符</span>
+                <span class="bar-tokens">{tokensText(row.promptTokens + row.replyTokens)}</span>
               </li>
             {/each}
           </ul>
@@ -191,14 +219,24 @@
                   <span class="model-site {call.site}">{call.site === 'ai' ? 'AI' : 'CN'}</span>
                 </span>
                 <span class="col-acct">{call.accountLabel ?? (call.accountId ?? '').slice(0, 8)}</span>
-                <span class="col-num">{call.promptChars ?? '—'}</span>
-                <span class="col-num">{call.replyChars === null || call.replyChars === undefined ? '流式' : call.replyChars}</span>
+                <span class="col-num">
+                  {#if typeof call.promptTokens === 'number'}≈{countText(call.promptTokens)}{:else}—{/if}
+                </span>
+                <span class="col-num">
+                  {#if typeof call.replyTokens === 'number'}
+                    ≈{countText(call.replyTokens)}
+                  {:else if call.streamed === true}
+                    流式
+                  {:else}
+                    —
+                  {/if}
+                </span>
                 <span class="col-ms">{call.elapsedMs ?? '—'}ms</span>
               </li>
             {/each}
           </ul>
           <div class="table-foot">
-            输入/输出为字符数。上游不返回 token 计数，因此这里不显示 token。
+            token 为估算值（中文约 1 字 = 1 token，英文约 4 字符 = 1 token）。WorkBuddy 上游不返回真实 token 数，因此无法给出精确值。
           </div>
         </section>
       {/if}
@@ -498,13 +536,56 @@
     font-variant-numeric: tabular-nums;
   }
 
-  .bar-chars {
+  .bar-tokens {
     flex: none;
-    width: 62px;
+    width: 74px;
     text-align: right;
     font-size: 9.5px;
     color: var(--ink-dim);
     font-variant-numeric: tabular-nums;
+  }
+
+  /* The prompt/reply split, on one line so it reads as one figure with two parts. */
+  .token-split {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    border-radius: var(--r-md);
+    background: var(--bg-card);
+    border: 1px solid var(--line-soft);
+    font-size: 10.5px;
+    color: var(--ink-dim);
+  }
+
+  .split-part {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 5px;
+  }
+
+  .split-label {
+    font-size: 9.5px;
+    color: var(--ink-dim);
+  }
+
+  .split-part b {
+    color: var(--ink-mid);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .split-divider {
+    width: 1px;
+    height: 11px;
+    background: var(--line-soft);
+  }
+
+  .split-note {
+    margin-left: auto;
+    font-size: 9.5px;
+    color: var(--ink-dim);
+    opacity: 0.8;
   }
 
   .table-head,

@@ -6,8 +6,9 @@
    * CN pool — the international one answers 401 — so this page reports what actually
    * happened per account rather than a single region-wide verdict.
    *
-   * The reward is claimed exactly once per day by the server's own day guard. The
-   * button here asks for a run now; it does not decide whether a claim is due.
+   * The reward is claimed exactly once per day by the server's own day guard, and the
+   * scheduler claims it on its own. The button here only asks for a run now; it cannot
+   * cause a second claim, so pressing it is always safe.
    */
   import { fly } from 'svelte/transition'
   import { cubicOut } from 'svelte/easing'
@@ -53,7 +54,8 @@
   </header>
 
   <p class="note">
-    每天自动检查一次；这里的手动按钮只是立刻跑一次，不会重复领取。
+    签到是自动的：软件启动后会自动领一次，之后每半小时检查一次，跨天后自动补领。
+    下面的按钮只是立刻跑一次，不会重复领取。
     国际版的计费接口不接受这类请求，因此只有国内版账号参与。
   </p>
 
@@ -133,6 +135,16 @@
         {#if busy}<span class="spin"></span>{/if}
         {busy ? '签到中' : '立即签到'}
       </button>
+      <div class="auto">
+        <span class="auto-dot" class:on={checkin.autoCheckin !== false}></span>
+        <span class="auto-text">
+          {#if checkin.autoCheckin === false}
+            自动签到已关闭
+          {:else}
+            自动签到已开启
+          {/if}
+        </span>
+      </div>
       {#if checkin.checkin?.at}
         <span class="stamp">
           上次检查 {new Date(checkin.checkin.at).toLocaleString('zh-CN', {
@@ -403,5 +415,26 @@
   .stamp {
     font-size: 10.5px;
     color: var(--ink-dim);
+  }
+
+  /* Sits beside the button so the automatic behaviour is visible without a click. */
+  .auto {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 10.5px;
+    color: var(--ink-dim);
+  }
+
+  .auto-dot {
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--ink-dim);
+    flex: none;
+  }
+
+  .auto-dot.on {
+    background: var(--good);
   }
 </style>
