@@ -83,8 +83,6 @@
   let busy = $state(null)
   /** Access keys, without their secrets. */
   let keys = $state([])
-  /** What an import into DeepSeek Harness would change. */
-  let importReport = $state(null)
   /** Which access action is running. */
   let accessBusy = $state(null)
 
@@ -164,11 +162,18 @@
   async function onReadDesktop(site) {
     await run(`desktop:${site}`, () => client.readFromDesktop(site), (result) => {
       const read = result.read
-      if (read?.ok === true) {
-        const name = read.credential?.label ?? read.credential?.uid?.slice(0, 8) ?? ''
-        toast('good', `已读到账号 ${name}`)
-      } else {
+      if (read?.ok !== true) {
         toast('bad', read?.error ?? '读取失败')
+        return
+      }
+      const name = read.credential?.label ?? read.credential?.uid?.slice(0, 8) ?? ''
+      // The read now stores what it found, so the message says which of the two
+      // happened rather than leaving the user to check the pool themselves.
+      if (result.imported === true) {
+        toast('good', `已导入账号 ${name}`)
+        if (result.state !== undefined) state = result.state
+      } else {
+        toast('warn', `读到账号 ${name}，但没有写入：${result.importError ?? '原因未知'}`)
       }
     })
   }
@@ -355,37 +360,6 @@
     }
   }
 
-  async function onRefreshImport() {
-    if (accessBusy !== null) return
-    accessBusy = 'import'
-    try {
-      const result = await client.fetchImport()
-      importReport = result.report ?? null
-    } catch (error) {
-      toast('bad', error.message)
-    } finally {
-      accessBusy = null
-    }
-  }
-
-    async function onWriteImport() {
-    if (accessBusy !== null) return
-    accessBusy = 'import'
-    try {
-      const result = await client.runImport()
-      importReport = result.report ?? importReport
-      if (result.ok === true) {
-        toast(result.changed === false ? 'warn' : 'good', result.message ?? '已完成')
-      } else {
-        toast('bad', result.error ?? '写入失败')
-      }
-    } catch (error) {
-      toast('bad', error.message)
-    } finally {
-      accessBusy = null
-    }
-  }
-
   /** Store a chosen client path, then re-read so the page reflects what took effect. */
   async function onSavePaths(changes) {
     try {
@@ -420,13 +394,9 @@
   onMount(() => {
     window.addEventListener('hashchange', onHashChange)
 
-    // Read once at start: the key list decides whether the endpoint is protected,
-    // and the import report is what the access page opens with.
+    // Read once at start: the key list decides whether the endpoint is protected.
     client.fetchKeys().then((reply) => {
       keys = reply.keys ?? []
-    }).catch(() => {})
-    client.fetchImport().then((reply) => {
-      importReport = reply.report ?? null
     }).catch(() => {})
 
     // Applied again here rather than only in main.js so a mode change made while
@@ -494,12 +464,8 @@
             appState={state}
             {keys}
             keyBusy={accessBusy === 'key'}
-            {importReport}
-            importBusy={accessBusy === 'import'}
             onCreateKey={onCreateKey}
             onUpdateKey={onUpdateKey}
-            onImport={onWriteImport}
-            onRefreshImport={onRefreshImport}
           />
         {:else if page === 'settings'}
           <Settings appState={state} onCopy={onCopyEndpoint} onSavePaths={onSavePaths} />

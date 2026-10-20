@@ -47,10 +47,10 @@ export function readVault(explicitDir) {
   const keyPath = join(dir, 'vault.key')
 
   if (!fs.existsSync(vaultPath)) {
-    return { ok: false, accounts: [], reason: 'vault-missing', error: `no account vault at ${vaultPath}` }
+    return { ok: false, accounts: [], reason: 'vault-missing', error: '还没有账号库，导入一个账号就会建立。' }
   }
   if (!fs.existsSync(keyPath)) {
-    return { ok: false, accounts: [], reason: 'key-missing', error: `no vault key at ${keyPath}` }
+    return { ok: false, accounts: [], reason: 'key-missing', error: '账号库缺少解密密钥，无法读取。请重新导入账号。' }
   }
 
   let key
@@ -60,7 +60,7 @@ export function readVault(explicitDir) {
     return { ok: false, accounts: [], reason: 'key-unreadable', error: message(error) }
   }
   if (key.length !== KEY_BYTES) {
-    return { ok: false, accounts: [], reason: 'key-invalid', error: `vault.key is ${key.length} bytes, expected ${KEY_BYTES}` }
+    return { ok: false, accounts: [], reason: 'key-invalid', error: '账号库的解密密钥已损坏，无法读取。请重新导入账号。' }
   }
 
   let blob
@@ -70,7 +70,7 @@ export function readVault(explicitDir) {
     return { ok: false, accounts: [], reason: 'vault-unreadable', error: message(error) }
   }
   if (blob === null || typeof blob !== 'object' || Array.isArray(blob)) {
-    return { ok: false, accounts: [], reason: 'vault-invalid', error: 'vault is not a JSON object' }
+    return { ok: false, accounts: [], reason: 'vault-invalid', error: '账号库文件已损坏，无法读取。' }
   }
 
   let plain
@@ -96,7 +96,7 @@ export function readVault(explicitDir) {
     return { ok: false, accounts: [], reason: 'vault-plaintext-invalid', error: message(error) }
   }
   if (!Array.isArray(accounts)) {
-    return { ok: false, accounts: [], reason: 'vault-plaintext-invalid', error: 'decrypted vault is not an array' }
+    return { ok: false, accounts: [], reason: 'vault-plaintext-invalid', error: '账号库内容格式不对，无法读取。' }
   }
   return { ok: true, accounts: accounts.filter(isUsableAccount) }
 }

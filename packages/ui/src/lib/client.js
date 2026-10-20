@@ -67,14 +67,6 @@ export function createClient() {
     createKey: (label, scope) => request('/keys', { method: 'POST', body: { label, scope } }),
     /** Enable, disable or delete a key. */
     updateKey: (id, changes) => request('/keys', { method: 'PATCH', body: { id, ...changes } }),
-    /** What an import into DeepSeek Harness would change. */
-    fetchPlugin: () => request('/plugin'),
-
-  installPlugin: () => request('/plugin', { method: 'POST', body: {} }),
-
-  fetchImport: () => request('/dsh-import'),
-    /** Write the configuration DeepSeek Harness needs. */
-    runImport: () => request('/dsh-import', { method: 'POST', body: {} }),
 
     /** Usage and quota across every account. */
     fetchUsage: () => request('/usage'),

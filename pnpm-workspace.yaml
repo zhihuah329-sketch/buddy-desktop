@@ -3,3 +3,5 @@ packages:
 allowBuilds:
   electron: true
   esbuild: true
+minimumReleaseAgeExclude:
+  - dsh-workbuddy-connect@0.7.9

@@ -138,15 +138,18 @@ function credentialFromVault(dataDir) {
 async function loadCredentialPlugin() {
   try {
     return { ok: true, module: await import(CREDENTIAL_PLUGIN) }
-  } catch {
-    return { ok: false, error: `the "${CREDENTIAL_PLUGIN}" plugin is not installed` }
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error)
+    }
   }
 }
 
 /**
  * Resolve the live WorkBuddy credential for check-in.
  *
- * @param dataDir - the daemon data directory, when configured.
+ * @param dataDir - the app's data directory.
  * @returns the credential, or a failure explaining why none is available.
  */
 export async function resolveCredential(dataDir) {
@@ -155,16 +158,17 @@ export async function resolveCredential(dataDir) {
 
   const loaded = await loadCredentialPlugin()
   if (!loaded.ok) {
+    // What the user can act on: no account is stored yet, and how to add one. The
+    // module name and the underlying error are of no use to them.
     return {
       ok: false,
-      error: 'no CN account is available for check-in. Import one into the daemo 守护进程 '
-        + `(see buddy_connect_diagnose_import for why a credential file may be unreadable); ${loaded.error}.`
+      error: '还没有可签到的国内版账号。先到「国内版」页点「从桌面版读取」导入一个账号。'
     }
   }
 
   const { WorkBuddyCredentialStore, CN_VARIANT } = loaded.module
   if (typeof WorkBuddyCredentialStore !== 'function' || CN_VARIANT === undefined) {
-    return { ok: false, error: `"${CREDENTIAL_PLUGIN}" does not publish the credential reader this plugin needs; update it.` }
+    return { ok: false, error: '内置的凭据读取组件版本不匹配，请重新安装本软件。' }
   }
 
   const electron = ensureElectronPath()
@@ -175,15 +179,19 @@ export async function resolveCredential(dataDir) {
     if (credential === undefined || typeof credential.accessToken !== 'string' || credential.accessToken.length === 0) {
       return {
         ok: false,
-        error: 'no usable WorkBuddy login was found. Import a CN account into the daemon, or sign in to the WorkBuddy desktop client.'
+        error: '没读到可用的登录状态。请确认 WorkBuddy 国内版已打开并处于登录中，再点「从桌面版读取」。'
       }
     }
     return { ok: true, credential, store }
   } catch (error) {
+    // The reader is a library with its own English diagnostics. What the user needs is
+    // the situation and the next step, so the original text goes to the log rather
+    // than onto the page.
+    console.warn(`workbuddy: 读取登录状态失败 — ${message(error)}`)
     const hint = electron === undefined
-      ? ' The WorkBuddy desktop app could not be located; install it, or set WORKBUDDY_ELECTRON_BIN to its WorkBuddy.exe.'
-      : ''
-    return { ok: false, error: `cannot read the WorkBuddy login: ${message(error)}.${hint}` }
+      ? '没有找到 WorkBuddy 国内版客户端。请先安装并登录它，或到「设置」页手动指定 exe 路径。'
+      : '请确认 WorkBuddy 国内版已打开并处于登录中。'
+    return { ok: false, error: `读不到 WorkBuddy 的登录状态。${hint}` }
   }
 }
 
@@ -304,7 +312,7 @@ async function billingPost(options) {
     }
 
     if (response.status === 401 || response.status === 403) {
-      return { ok: false, unauthorized: true, error: 'the WorkBuddy login was rejected; sign in again in the WorkBuddy app.' }
+      return { ok: false, unauthorized: true, error: 'WorkBuddy 登录已失效。请打开 WorkBuddy 客户端重新登录，然后点「从桌面版读取」。' }
     }
     if (!response.ok) {
       lastError = `WorkBuddy returned HTTP ${response.status}`
@@ -327,7 +335,9 @@ export async function checkinStatus(credential, signal) {
   if (!result.ok) return result
   const payload = result.payload
   if (Number(payload?.code) !== 0 || payload?.data === null || typeof payload?.data !== 'object') {
-    return { ok: false, error: `WorkBuddy refused the check-in status query (code ${payload?.code ?? 'unknown'}).` }
+    // The code is kept in the text because it is the only thing that distinguishes one
+    // refusal from another, and it is what a user would quote when asking for help.
+    return { ok: false, error: `WorkBuddy 拒绝了签到状态查询（错误码 ${payload?.code ?? 'unknown'}）。` }
   }
   const data = payload.data
   return {
@@ -358,7 +368,7 @@ export async function claimCheckin(credential, signal) {
   const code = Number(result.payload?.code)
   if (code === 0) return { ok: true, claimed: true }
   if (code === 1001 || code === 10001) return { ok: true, claimed: false }
-  return { ok: false, error: `WorkBuddy refused the check-in (code ${Number.isFinite(code) ? code : 'unknown'}).` }
+  return { ok: false, error: `WorkBuddy 拒绝了签到（错误码 ${Number.isFinite(code) ? code : 'unknown'}）。` }
 }
 
 /**
@@ -375,7 +385,7 @@ export async function readBalance(credential, signal) {
   const result = await billingPost({ credential, endpoint: 'get-user-resource-summary', v2: false, signal })
   if (!result.ok) return result
   const packages = result.payload?.data?.Packages
-  if (!Array.isArray(packages)) return { ok: false, error: 'WorkBuddy did not return a credit breakdown.' }
+  if (!Array.isArray(packages)) return { ok: false, error: 'WorkBuddy 没有返回额度明细。' }
   const remaining = packages.reduce((sum, entry) => sum + Math.max(0, number(entry?.CycleRemainCapacity)), 0)
   return { ok: true, balance: remaining }
 }

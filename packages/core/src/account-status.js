@@ -395,8 +395,8 @@ export function resolveClientForSite(options = {}) {
     source: 'missing',
     site,
     hint: site === 'ai'
-      ? '尚未检测到国际版 WorkBuddy 客户端。请从 workbuddy.ai 下载安装并登录；若已安装在其他位置，在插件配置里填写 workbuddyIntlPath。'
-      : '尚未检测到国内版 WorkBuddy 客户端。请从 workbuddy.cn 下载安装并登录；若已安装在其他位置，在插件配置里填写 workbuddyPath。'
+      ? '尚未检测到国际版 WorkBuddy 客户端。请从 workbuddy.ai 下载安装并登录；若装在其它位置，到「设置」页手动指定路径。'
+      : '尚未检测到国内版 WorkBuddy 客户端。请从 workbuddy.cn 下载安装并登录；若装在其它位置，到「设置」页手动指定路径。'
   }
 }
 
@@ -853,8 +853,8 @@ function readCredentialFile(path) {
 function explainNoImportable(discovery) {
   const sealed = discovery.files.filter((f) => f.reason === 'encrypted_credential')
   if (sealed.length > 0 && discovery.importable === 0) {
-    return '本机唯一的凭据文件被 WorkBuddy 加密存放，插件读不到明文。'
-      + '中国版客户端把 accessToken 封装成 $wbEncrypted，密钥在其原生层生成，无法离线解开。'
+    return '本机唯一的凭据文件被 WorkBuddy 加密存放，无法离线解开。'
+      + '中国版客户端把 accessToken 封装成 $wbEncrypted，密钥在其原生层生成。'
       + '请直接点「从桌面版读取」——它会让客户端自己解开，不需要抓包。'
   }
   if (discovery.files.length === 0) {

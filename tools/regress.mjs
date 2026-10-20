@@ -144,15 +144,6 @@ for (const page of PAGES) {
   check(`首页可访问（${page}）`, response.status === 200, `HTTP ${response.status}`)
 }
 
-// --- Plugin side ---
-console.log('\n=== 桌面应用的 provider ===')
-const pluginReport = await getJson(`${APP}/api/plugin`)
-check('provider 插件已安装', pluginReport.body.plugin?.installed === true,
-  pluginReport.body.plugin?.target?.slice(-40) ?? pluginReport.body.plugin?.reason ?? '')
-check('provider 已注册到配置', pluginReport.body.plugin?.registered === true)
-check('provider 名称正确', pluginReport.body.plugin?.providerName === 'Command Buddy Connect',
-  pluginReport.body.plugin?.providerName ?? '')
-
 console.log('')
 console.log(failures === 0 ? `全部通过（${checks} 项）` : `${failures}/${checks} 项失败`)
 process.exitCode = failures === 0 ? 0 : 1

@@ -102,6 +102,32 @@ function pad(value) {
 }
 
 /**
+ * The ids of the accounts that still exist, or null when the store cannot be read.
+ *
+ * Used to drop results that belong to an account deleted since the last run. A null
+ * return means "unknown", which the caller treats as "show everything" rather than
+ * hiding rows because the store happened to be busy.
+ *
+ * @param dataDir - the app's data directory.
+ * @returns a Set of ids, or null.
+ */
+function liveAccountIds(dataDir) {
+  try {
+    const vault = readVault(dataDir)
+    if (vault.ok !== true) return null
+    const ids = new Set()
+    for (const account of vault.accounts ?? []) {
+      if (account && account.removed !== true && typeof account.id === 'string') {
+        ids.add(account.id)
+      }
+    }
+    return ids
+  } catch {
+    return null
+  }
+}
+
+/**
  * Owns the check-in state and its timers for one plugin instance.
  *
  * The scheduler keeps a small status snapshot so the HTTP route can answer
@@ -295,9 +321,19 @@ export class CheckinScheduler {
   /**
    * The current status, in the shape the UI and the tools consume.
    *
+   * The per-account results are from the last run, so an account deleted since then is
+   * still in them. They are filtered against the account store here: without that, a
+   * removed account stayed on the check-in page as if it were still being visited.
+   *
    * @returns a detached snapshot.
    */
   snapshot() {
+    const live = liveAccountIds(this.dataDir)
+    const recent = (this.state?.accounts ?? []).filter(
+      // When the store cannot be read at all, the results are shown unfiltered rather
+      // than blanking a page that has nothing wrong with it.
+      (entry) => live === null || live.has(entry.id)
+    )
     return {
       installed: true,
       signedIn: this.state !== undefined,
@@ -314,8 +350,8 @@ export class CheckinScheduler {
       },
       // Per-account results of the last run. The single-account fields above
       // stay for compatibility, but this is what the page lists.
-      checkinAccounts: this.state?.accounts ?? [],
-      checkinVisited: this.state?.visited ?? 0,
+      checkinAccounts: recent,
+      checkinVisited: recent.length,
       balance: this.state?.balance ?? null,
       autoCheckin: this.enabled,
       busy: this.busy,

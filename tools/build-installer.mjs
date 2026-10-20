@@ -154,8 +154,6 @@ cpSync(join(ROOT, 'packages', 'desktop', 'src', 'main.cjs'), join(appDir, 'main.
 
 // The server, core and page travel inside the asar-less tree, which Electron loads
 // directly: no packing step is needed, and a stack trace still points at real files.
-// The provider plugin is generated at install time from plugin-source.js, because
-// its manifest has to match the harness on the target machine. Nothing to copy here.
 
 for (const [name, source] of [
   ['server', join(ROOT, 'packages', 'server')],
@@ -171,6 +169,21 @@ for (const [name, source] of [
     copyTree(join(source, 'dist'), join(target, 'dist'))
   }
 }
+
+// The credential reader. It is a separate published package rather than part of this
+// app, and reading a credential fails without it — which on a fresh machine is the
+// first thing a user tries. pnpm keeps it beside the package that depends on it, so
+// it is resolved from there and placed where the app's own lookup expects it.
+const SIBLING = 'dsh-workbuddy-connect'
+const siblingCandidates = [
+  join(ROOT, 'packages', 'core', 'node_modules', SIBLING),
+  join(ROOT, 'node_modules', SIBLING)
+]
+const siblingSource = siblingCandidates.find((candidate) => existsSync(candidate))
+if (siblingSource === undefined) {
+  throw new Error(`缺少 ${SIBLING}：先在仓库根目录运行 pnpm install。`)
+}
+copyTree(siblingSource, join(appDir, 'node_modules', SIBLING))
 
 // The server resolves the page relative to its own file, so the built page is also
 // placed where that lookup expects it.

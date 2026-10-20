@@ -32,6 +32,9 @@ import {
   readHealth,
   importCredentials,
   removeAccount,
+  // Writing a credential that was just read is what makes 「从桌面端读取」 store the
+  // account rather than only report it.
+  upsertCapturedCredential,
   resolveClientForSite,
   parseModel,
   MODEL_IDS,
@@ -60,13 +63,6 @@ import { forwardToCommandCode } from './cc-forward.js'
 import { readSettings, writeSettings } from './settings.js'
 import { countChars, recordCall, summariseActivity } from './activity.js'
 import { createKey, publicKeys, updateKey, verifyKey } from './api-keys.js'
-import { applyImport, inspectImport, watchImport } from './dsh-import.js'
-import {
-  PLUGIN_PROVIDER_ID,
-  PLUGIN_PROVIDER_NAME,
-  inspectPlugin,
-  installPlugin
-} from './install-plugin.js'
 
 /** Content types for the small set of files this server will serve. */
 const MIME = {
@@ -349,12 +345,6 @@ export function buildState(options = {}) {
     checkin: options.scheduler?.snapshot() ?? null,
     // The paths the user chose, which is what the settings page edits.
     settings: stored,
-    // What the harness needs in order to offer these models, and under which name.
-    plugin: {
-      ...inspectPlugin({ port: options.port }),
-      providerId: PLUGIN_PROVIDER_ID,
-      providerName: PLUGIN_PROVIDER_NAME
-    },
     // What the page's switches should show, including the effective state.
     switches: options.switches?.snapshot() ?? null,
     // How many keys exist, so the page can say whether the endpoint is protected.
@@ -404,33 +394,6 @@ export async function startServer(options = {}) {
     scheduler.run().catch(() => {})
   }, 3000)
 
-  // Register the models in DeepSeek Harness automatically on every start. A user who
-  // has to find a page and press a button to make the app work has been given a
-  // setup step they did not ask for; doing it here means installing the app is
-  // enough. Failure is silent because the harness may not be installed at all.
-  setTimeout(() => {
-    try {
-      const detected = resolveClientForSite({ site: 'cn' })
-      const options = { detectedClientPath: detected?.path }
-      const result = applyImport(options)
-      if (result.ok === true && result.changed === true) {
-        console.log(`DSH 配置已更新: ${result.file}`)
-      }
-      // The harness rewrites its patch file whenever its own settings are saved, so
-      // a single write at startup is not enough: the stale provider has to be
-      // repaired again after each save.
-      watchImport(options)
-
-      // Installing the provider plugin is what makes the models appear at all.
-      // It is idempotent, so running it on every start also applies an upgrade.
-      const plugin = installPlugin({ port: options.port })
-      if (plugin.ok === true && plugin.changed === true) {
-        console.log(`已安装 ${PLUGIN_PROVIDER_NAME} 到 ${plugin.profile}`)
-      }
-    } catch {
-      // Another program's configuration is not a reason to fail this one.
-    }
-  }, 1500)
 
   const server = createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', `http://${host}`)
@@ -663,7 +626,33 @@ async function handleApi(req, url, send, options) {
     const body = await readJson(req)
     const site = body.site === 'ai' ? 'ai' : 'cn'
     const read = await readDesktopCredential({ site, ...(options.electron === undefined ? {} : {}) })
-    return { read }
+
+    // Reading a credential the app could not store was a dead end: the page said "已读到
+    // 账号" and the pool stayed empty. The credential is written to the account store
+    // here, so the button does what its label says.
+    if (read.ok !== true) return { read, imported: false }
+
+    const credential = read.credential ?? {}
+    const written = await upsertCapturedCredential({
+      dataDir: options.dataDir,
+      site,
+      uid: credential.uid,
+      enterpriseId: credential.enterpriseId ?? '',
+      accessToken: credential.accessToken,
+      ...(typeof credential.refreshToken === 'string' ? { refreshToken: credential.refreshToken } : {}),
+      ...(typeof credential.domain === 'string' ? { domain: credential.domain } : {}),
+      ...(typeof credential.expiresAt === 'number' ? { expiresAt: credential.expiresAt } : {}),
+      ...(typeof credential.label === 'string' && credential.label.length > 0
+        ? { label: credential.label }
+        : {})
+    })
+
+    return {
+      read,
+      imported: written.ok === true,
+      ...(written.ok === true ? { accountId: written.id } : { importError: written.error }),
+      state: buildState(options)
+    }
   }
 
   if (route === 'account' && req.method === 'DELETE') {
@@ -671,7 +660,9 @@ async function handleApi(req, url, send, options) {
     if (typeof id !== 'string' || id.length === 0) {
       return { error: '缺少账号 id。' }
     }
-    const result = await removeAccount({ ...scope, id })
+    // `removeAccount` names this `accountId`; passing it as `id` left it undefined and
+    // the call refused with "缺少账号 id" while holding a perfectly good id.
+    const result = await removeAccount({ ...scope, accountId: id })
     return { result, state: buildState(scope) }
   }
 
@@ -714,35 +705,6 @@ async function handleApi(req, url, send, options) {
       workbuddyIntlPath: body?.workbuddyIntlPath
     })
     return { ok: true, settings, state: buildState(options) }
-  }
-
-  // The provider plugin. Separate from the profile import because they solve
-  // different problems: the import points the harness at a provider that exists,
-  // while this installs a provider of this app's own.
-  if (route === 'plugin' && req.method === 'GET') {
-    return { plugin: inspectPlugin({ port: options.port }) }
-  }
-
-  if (route === 'plugin' && req.method === 'POST') {
-    const result = installPlugin({ port: options.port })
-    return { ...result, plugin: inspectPlugin({ port: options.port }) }
-  }
-
-  // Importing into DeepSeek Harness: a report of what would change, then the change.
-  if (route === 'dsh-import' && req.method === 'GET') {
-    return { report: inspectImport() }
-  }
-
-  if (route === 'dsh-import' && req.method === 'POST') {
-    const body = await readJson(req)
-    // Detection, not a guess: the path recorded in another program's config has to
-    // be the one on this machine.
-    const detected = resolveClientForSite({ site: 'cn' })
-    const result = applyImport({
-      workbuddyPath: body?.workbuddyPath,
-      detectedClientPath: detected?.path
-    })
-    return { ...result, report: inspectImport() }
   }
 
   // The switches. A single endpoint for all three, because they are one piece of

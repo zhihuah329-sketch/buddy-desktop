@@ -207,15 +207,19 @@ export async function readDesktopCredential(options = {}) {
     credential = await new Store({ variant }).resolve()
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
-    // The single most common and most actionable failure: the app is not
-    // installed where the reader looks, or it is not signed in.
+    // The reader is a library with its own English diagnostics. What the user needs is
+    // the situation and the next step, so the original text goes to the log instead of
+    // onto the page. The two regions are separate products, so the message names the
+    // one that was asked for rather than saying "WorkBuddy".
+    console.warn(`desktop-app: 读取 ${site} 登录状态失败 — ${detail}`)
+    const product = site === 'ai' ? 'WorkBuddyAI 国际版' : 'WorkBuddy 国内版'
     const hint = electron === undefined
-      ? '没有找到 WorkBuddy 桌面版。请在插件配置的 workbuddyPath 里填写 WorkBuddy.exe 的完整路径。'
-      : ''
+      ? `没有找到${product}。请先安装并登录它，或到「设置」页手动指定它的 exe 路径。`
+      : `已找到${product}，但读不到登录状态。请打开它确认已登录。`
     return {
       ok: false,
       reason: 'unreadable',
-      error: `${detail}${hint.length > 0 ? ` ${hint}` : ''}`
+      error: hint
     }
   }
 

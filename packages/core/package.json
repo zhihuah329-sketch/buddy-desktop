@@ -11,5 +11,8 @@
   },
   "scripts": {
     "probe": "node ../../probe-credential.mjs"
+  },
+  "dependencies": {
+    "dsh-workbuddy-connect": "^0.7.9"
   }
 }

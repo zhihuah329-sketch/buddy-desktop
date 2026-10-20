@@ -1,10 +1,9 @@
 <script>
   /**
-   * Access keys and the harness import.
+   * Access keys.
    *
-   * Two things that both answer "how do I use this from somewhere else": a key lets
-   * another tool call the endpoint, and the import makes DeepSeek Harness offer the
-   * models in a new session.
+   * One thing answers "how do I use this from somewhere else": a key lets another
+   * tool call the endpoint.
    *
    * The key is shown once, in a box the user copies before dismissing. Keeping a
    * readable copy would mean storing the secret, which is exactly what hashing
@@ -17,12 +16,8 @@
     appState,
     keys,
     keyBusy,
-    importReport,
-    importBusy,
     onCreateKey,
-    onUpdateKey,
-    onImport,
-    onRefreshImport
+    onUpdateKey
   } = $props()
 
   /** A label being typed for a new key. */
@@ -81,86 +76,9 @@
   <header class="page-head">
     <div>
       <h1>接入与密钥</h1>
-      <span class="sub">让其它工具和 DeepSeek Harness 用上这里的模型</span>
+      <span class="sub">在这里生成密钥，填到其它工具里使用</span>
     </div>
   </header>
-
-  <!-- Import into DSH -->
-  <section class="block">
-    <div class="block-head">
-      <span class="block-label">导入到 DeepSeek Harness</span>
-      <button class="mini" disabled={importBusy} onclick={onRefreshImport}>重新检查</button>
-    </div>
-
-    {#if importReport === null}
-      <div class="muted">正在检查…</div>
-    {:else if importReport.available !== true}
-      <div class="warn-line">{importReport.reason ?? '找不到 DSH 配置'}</div>
-    {:else}
-      <div class="file-line">
-        <span class="file-key">配置文件</span>
-        <code class="file-path">{importReport.file}</code>
-      </div>
-
-      {#if importReport.changes.length === 0}
-        <!-- Already written. Saying "已经写入" rather than offering a button that
-             would change nothing: a disabled-looking action reads as a failure. -->
-        <div class="ok-line">
-          <span class="dot good"></span>
-          已经写入，无需再点
-        </div>
-
-        <div class="state-list">
-          <div class="state-row">
-            <span class="state-key">provider</span>
-            <code class="state-value">buddy-connect</code>
-          </div>
-          <div class="state-row">
-            <span class="state-key">enableProvider</span>
-            <code class="state-value">true</code>
-          </div>
-          {#if importReport.clientPath}
-            <div class="state-row">
-              <span class="state-key">workbuddyPath</span>
-              <code class="state-value small">{importReport.clientPath}</code>
-            </div>
-          {/if}
-        </div>
-
-        <div class="hint strong">
-          下一步：<b>重启 DeepSeek Harness</b>，然后在新建会话的模型列表里就能看到
-          <code>deepseek-v4.1-flash-cn</code> 和 <code>deepseek-v4.1-flash-ai</code>。
-        </div>
-
-        <button class="btn ghost" disabled={importBusy} onclick={onImport}>
-          {importBusy ? '写入中…' : '强制重写一次'}
-        </button>
-      {:else}
-        <div class="changes">
-          <div class="changes-title">检测到 {importReport.changes.length} 处需要修改</div>
-          {#each importReport.changes as change (change.key)}
-            <div class="change-row">
-              <code class="change-key">{change.key}</code>
-              <span class="change-from">{change.from}</span>
-              <span class="change-arrow">→</span>
-              <span class="change-to">{change.to}</span>
-            </div>
-          {/each}
-        </div>
-
-        <button class="btn primary" disabled={importBusy} onclick={onImport}>
-          {importBusy ? '写入中…' : '写入 DSH 配置'}
-        </button>
-      {/if}
-
-      <button class="btn primary" disabled={importBusy} onclick={onImport}>
-        {importBusy ? '写入中…' : importReport.changes.length === 0 ? '重新写入' : '写入 DSH 配置'}
-      </button>
-      <div class="hint">
-        会先备份原文件。写入后需要重启 DeepSeek Harness 才会生效。
-      </div>
-    {/if}
-  </section>
 
   <!-- Access keys -->
   <section class="block">
@@ -303,164 +221,6 @@
     color: var(--ink-dim);
   }
 
-  .file-line {
-    display: flex;
-    align-items: baseline;
-    gap: 8px;
-    padding: 7px 10px;
-    border-radius: var(--r-sm);
-    background: var(--bg-input);
-    border: 1px solid var(--line-soft);
-    margin-bottom: 8px;
-  }
-
-  .file-key {
-    flex: none;
-    font-size: 10px;
-    color: var(--ink-dim);
-  }
-
-  .file-path {
-    font-size: 10.5px;
-    color: var(--ink-mid);
-    word-break: break-all;
-  }
-
-  .ok-line {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-    padding: 8px 10px;
-    border-radius: var(--r-sm);
-    background: var(--good-glow);
-    border: 1px solid rgba(69, 209, 122, 0.22);
-    font-size: 11px;
-    color: var(--good);
-    margin-bottom: 9px;
-  }
-
-  .warn-line {
-    padding: 8px 10px;
-    border-radius: var(--r-sm);
-    background: var(--warn-glow);
-    border: 1px solid rgba(227, 168, 58, 0.22);
-    font-size: 11px;
-    color: var(--warn);
-    margin-bottom: 9px;
-  }
-
-  /* The values actually in the file, so a user can see what was written rather than
-     trusting a tick. */
-  .state-list {
-    padding: 8px 10px;
-    border-radius: var(--r-sm);
-    background: var(--bg-input);
-    border: 1px solid var(--line-soft);
-    margin-bottom: 9px;
-  }
-
-  .state-row {
-    display: flex;
-    align-items: baseline;
-    gap: 9px;
-    padding: 2px 0;
-    font-size: 10.5px;
-  }
-
-  .state-key {
-    flex: none;
-    width: 108px;
-    color: var(--ink-dim);
-  }
-
-  .state-value {
-    color: var(--ink);
-    font-size: 10.5px;
-  }
-
-  .state-value.small {
-    font-size: 10px;
-    word-break: break-all;
-  }
-
-  .btn.ghost {
-    background: none;
-    border-color: transparent;
-    color: var(--ink-dim);
-  }
-
-  .btn.ghost:hover:not(:disabled) {
-    color: var(--ink-mid);
-    border-color: var(--line);
-    background: var(--bg-raised);
-  }
-
-  .hint.strong {
-    padding: 8px 10px;
-    border-radius: var(--r-sm);
-    background: var(--cn-soft);
-    border: 1px solid rgba(76, 154, 255, 0.24);
-    color: var(--ink-mid);
-    font-size: 10.5px;
-    line-height: 1.6;
-    margin-bottom: 8px;
-  }
-
-  .hint.strong b {
-    color: var(--cn);
-    font-weight: 600;
-  }
-
-  .hint.strong code {
-    font-size: 10px;
-    color: var(--ink);
-    background: var(--bg-input);
-    padding: 1px 4px;
-    border-radius: 3px;
-  }
-
-  .changes {
-    padding: 9px 11px;
-    border-radius: var(--r-sm);
-    background: var(--bg-input);
-    border: 1px solid var(--line-soft);
-    margin-bottom: 9px;
-  }
-
-  .changes-title {
-    font-size: 10px;
-    color: var(--ink-dim);
-    margin-bottom: 5px;
-  }
-
-  .change-row {
-    display: flex;
-    align-items: baseline;
-    gap: 7px;
-    padding: 2px 0;
-    font-size: 10.5px;
-  }
-
-  .change-key {
-    flex: none;
-    width: 96px;
-    color: var(--ink-mid);
-  }
-
-  .change-from {
-    color: var(--bad);
-    text-decoration: line-through;
-    opacity: 0.75;
-  }
-
-  .change-arrow {
-    color: var(--ink-dim);
-  }
-
-  .change-to {
-    color: var(--good);
-  }
-
   .btn {
     display: inline-flex;
     align-items: center;
@@ -523,13 +283,6 @@
   .mini.dim {
     color: var(--ink-dim);
     margin-top: 6px;
-  }
-
-  .hint {
-    margin-top: 7px;
-    font-size: 10px;
-    color: var(--ink-dim);
-    line-height: 1.5;
   }
 
   .muted {
@@ -675,14 +428,4 @@
     border-radius: 3px;
   }
 
-  .dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    flex: none;
-  }
-
-  .dot.good {
-    background: var(--good);
-  }
 </style>
