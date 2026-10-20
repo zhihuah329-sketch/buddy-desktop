@@ -92,23 +92,42 @@ function bearer(req) {
 }
 
 /**
- * Whether a request comes from this app's own harness plugin.
+ * Whether a request reaches this app over the loopback interface.
  *
- * Two conditions together: the connection originates on the loopback interface, and
- * the client identifies itself. The header alone would be trivial to forge from
- * another local program, so the loopback check is what carries the weight — a remote
- * caller cannot claim to be loopback.
+ * ## Why the key does not apply to these
  *
- * This is not a security boundary against a hostile process on the same machine; no
- * loopback-only scheme is. It exists so a normal user is not asked to copy a key
- * into another program to use the feature they just enabled.
+ * A key exists to stop another machine from spending an account. A request on
+ * 127.0.0.1 is already on this machine, so a key buys nothing against the threat it
+ * is meant for — but requiring one anyway breaks every local tool the moment a key
+ * is created. That is not hypothetical: creating a key used to turn a working client
+ * into `Connection error` instantly, because the client's configuration still had no
+ * key and the endpoint had only just started asking for one.
+ *
+ * So the check is the connection's origin, and nothing else. A tool on this machine
+ * keeps working before and after a key is created; a tool on another machine still
+ * has to present one.
+ *
+ * This is not a boundary against a hostile process running on this machine; no
+ * loopback-only scheme is, and pretending otherwise would only inconvenience the
+ * user it is supposed to be helping.
  *
  * @param req - the incoming request.
- * @returns whether the request is the local plugin.
+ * @returns whether the request originated on this machine.
  */
 function isLocalClient(req) {
-  if (req.headers['x-buddy-desktop-client'] !== 'plugin') return false
-  const remote = req.socket?.remoteAddress ?? ''
+  return isLocalAddress(req.socket?.remoteAddress ?? '')
+}
+
+/**
+ * Whether an address is this machine.
+ *
+ * Exported so the rule can be tested against the addresses it must distinguish, rather
+ * than by a copy of the rule that could drift from this one.
+ *
+ * @param remote - the socket's peer address.
+ * @returns whether it is loopback.
+ */
+export function isLocalAddress(remote) {
   return remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1'
 }
 
@@ -122,16 +141,58 @@ function originAllowed(origin) {
   }
 }
 
-/** Read and parse a JSON request body, with a size cap. */
+/**
+ * The largest request body accepted, in bytes.
+ *
+ * ## Why this is not a small number
+ *
+ * The models this app serves are declared with a million-token context and image input,
+ * and a client is entitled to use both. A tool editing a document sends its whole
+ * history on every turn: the prompt text, plus every image it has looked at encoded as
+ * base64, which is a third larger than the file itself. Fifty photographed receipts is
+ * tens of megabytes before anything unusual has happened.
+ *
+ * The previous cap was one megabyte, and the body was refused by destroying the socket.
+ * A destroyed socket is indistinguishable from a network fault, so the caller reported
+ * `Connection error` and went looking at the wrong thing entirely — while the plugin
+ * path, which never crosses HTTP, worked fine on the same document.
+ *
+ * ## Why a cap remains
+ *
+ * Reading a body means holding it in memory, so an unbounded one is a way to take the
+ * process down. The limit is therefore high enough that a legitimate conversation never
+ * reaches it, configurable for the machine's headroom, and refused with a status the
+ * caller can read rather than a dropped connection.
+ */
+const MAX_BODY_BYTES = (() => {
+  const configured = Number(process.env.BUDDY_MAX_BODY_MB)
+  if (Number.isFinite(configured) && configured > 0) return configured * 1024 * 1024
+  return 256 * 1024 * 1024
+})()
+
+/**
+ * Read and parse a JSON request body.
+ *
+ * @param req - the request to read.
+ * @returns the parsed body, or a rejection carrying an HTTP status to report.
+ */
 function readJson(req) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
     req.on('data', (chunk) => {
       size += chunk.length
-      if (size > 1_000_000) {
-        reject(new Error('请求体过大。'))
-        req.destroy()
+      if (size > MAX_BODY_BYTES) {
+        // A status, not a destroyed socket: the caller has to be able to tell a body
+        // that was rejected from a network that failed, or the error they report says
+        // nothing about the cause.
+        const error = new Error(
+          `一次请求超过 ${Math.round(MAX_BODY_BYTES / 1048576)} MB，已被拒绝。`
+          + '这个体积通常来自一次附带的图片过多。可以分几次发送，或减少同时附带的图片数量。'
+        )
+        error.statusCode = 413
+        reject(error)
+        req.pause()
         return
       }
       chunks.push(chunk)
@@ -494,12 +555,11 @@ export async function startServer(options = {}) {
       // the moment a user disabled their last key — the opposite of what disabling a
       // credential is meant to achieve.
       const allKeys = publicKeys(options.dataDir)
-      // The harness plugin this app installs talks to this endpoint from the same
-      // machine. Requiring a key there would mean pasting a credential into another
-      // program's config to use a feature just switched on, so the plugin identifies
-      // itself instead.
-      const localPlugin = isLocalClient(req)
-      if (allKeys.length > 0 && localPlugin !== true) {
+      // A key guards against another machine spending an account, so a request that
+      // arrived over loopback is not asked for one. Doing otherwise broke every local
+      // tool the instant a key was created, while protecting against nothing.
+      const fromThisMachine = isLocalClient(req)
+      if (allKeys.length > 0 && fromThisMachine !== true) {
         const presented = bearer(req)
         // Scoped to the upstream this path serves, so a key minted for one product
         // does not spend the other.
@@ -903,7 +963,11 @@ async function handleChat(req, res, options) {
   try {
     payload = await readJson(req)
   } catch (error) {
-    return fail(400, error instanceof Error ? error.message : String(error))
+    // A body too large for the configured limit is a 413, not a malformed request. The
+    // caller acts differently on the two: one means "send less", the other "your JSON
+    // is broken".
+    const status = error?.statusCode ?? 400
+    return fail(status, error instanceof Error ? error.message : String(error))
   }
 
   const requested = typeof payload?.model === 'string' ? payload.model : ''

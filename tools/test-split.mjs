@@ -58,14 +58,25 @@ const ccKey = (await (await fetch(`${B}/api/keys`, {
 })).json()).key
 check('密钥都是 sk- 开头', wbKey.startsWith('sk-') && ccKey.startsWith('sk-'))
 
+// A key is only asked for from another machine, so over loopback every key is accepted
+// regardless of its scope. What this file still checks is that the two products stay
+// separate: each path answers with its own models, and a cross-path call is refused
+// rather than quietly served by the other pool. Scope enforcement itself belongs to a
+// remote caller, which cannot be staged on a loopback-only port; isLocalAddress covers
+// that side in test-keys.
 const wbModelsNoKey = await fetch(`${B}/v1/models`)
-check('有密钥后列表需要密钥', wbModelsNoKey.status === 401, String(wbModelsNoKey.status))
+check('本机无密钥可读列表', wbModelsNoKey.status === 200, String(wbModelsNoKey.status))
 const wbModelsWithWb = await fetch(`${B}/v1/models`, { headers: { authorization: `Bearer ${wbKey}` } })
 check('WorkBuddy 密钥可读 WorkBuddy 列表', wbModelsWithWb.status === 200, String(wbModelsWithWb.status))
-const ccModelsWithWb = await fetch(`${B}/v1/cc/models`, { headers: { authorization: `Bearer ${wbKey}` } })
-check('WorkBuddy 密钥读不了 CC 列表', ccModelsWithWb.status === 401, String(ccModelsWithWb.status))
 const ccModelsWithCc = await fetch(`${B}/v1/cc/models`, { headers: { authorization: `Bearer ${ccKey}` } })
 check('CC 密钥可读 CC 列表', ccModelsWithCc.status === 200, String(ccModelsWithCc.status))
+
+// The scope on a key is still recorded, so a remote caller is held to it later.
+const listed = (await (await fetch(`${B}/api/keys`)).json()).keys ?? []
+const wbRecord = listed.find((record) => record.label === '仅 WorkBuddy')
+const ccRecord = listed.find((record) => record.label === '仅 Command Code')
+check('密钥作用域已保存', wbRecord?.scope === 'workbuddy' && ccRecord?.scope === 'command-code',
+  `wb=${wbRecord?.scope} cc=${ccRecord?.scope}`)
 
 // Clean up so the next run starts from no keys.
 const list = await (await fetch(`${B}/api/keys`)).json()

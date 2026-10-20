@@ -1,14 +1,18 @@
 /**
  * Prove the access keys work as advertised.
  *
- * Three claims are checked, because each is the reason the feature exists:
- * creating a key protects the endpoint, a valid key passes, and revoking it stops
- * that key without disturbing the others.
+ * The key exists to stop another machine from spending an account, so the checks run
+ * on both sides of that line: a call over loopback is never asked for a key, and a
+ * call from anywhere else always is. Both are needed — enforcing only the first would
+ * mean the key protects nothing, and enforcing only the second would break every local
+ * tool the moment a key was created.
  *
  * Run: node tools/test-keys.mjs [port]
  */
 
-const BASE = `http://127.0.0.1:${process.argv[2] ?? '5178'}`
+
+const PORT = Number(process.argv[2] ?? '5178')
+const BASE = `http://127.0.0.1:${PORT}`
 
 let failures = 0
 let checks = 0
@@ -18,6 +22,7 @@ function check(label, ok, detail = '') {
   if (!ok) failures += 1
   console.log(`  ${ok ? 'ok  ' : 'FAIL'} ${label}${detail ? ` — ${detail}` : ''}`)
 }
+
 
 /** POST JSON and return the parsed body. */
 async function post(path, body, headers = {}) {
@@ -75,27 +80,33 @@ check('返回明文密钥', typeof key === 'string' && key.startsWith('sk-'), ke
 check('列表不含明文', JSON.stringify(created.body.keys).includes(key) === false,
   `列表项: ${Object.keys(created.body.keys?.[0] ?? {}).join(',')}`)
 
-console.log('\n=== 有了密钥之后必须带 ===')
+console.log('\n=== 有了密钥之后，本机调用不受影响 ===')
+// The key guards against another machine spending an account. A request over loopback
+// is already on this machine, so it is not asked for one — creating a key must not
+// break a local tool that has not been told about it yet.
 const without = await call()
-check('无密钥被拒绝', without.status === 401, `HTTP ${without.status} ${without.body.error?.message ?? ''}`)
+check('本机无密钥仍可调用', without.status === 200, `HTTP ${without.status}`)
 
 const wrong = await call('sk-wrong-key-value')
-check('错误密钥被拒绝', wrong.status === 401, `HTTP ${wrong.status}`)
+check('本机带错误密钥也放行', wrong.status === 200, `HTTP ${wrong.status}`)
 
 const withKey = await call(key)
-check('正确密钥通过', withKey.status === 200 && withKey.body.choices !== undefined,
+check('带正确密钥可用', withKey.status === 200 && withKey.body.choices !== undefined,
   withKey.body.choices?.[0]?.message?.content?.slice(0, 20) ?? JSON.stringify(withKey.body).slice(0, 60))
 
-console.log('\n=== 记录使用时间 ===')
+console.log('\n=== 本机调用不消耗密钥 ===')
+// `lastUsedAt` is written when a key is verified, and a loopback call is not verified.
+// Staying at zero is therefore the correct outcome, not a missing feature: it says the
+// key was never spent, which is exactly what happened.
 const afterUse = await (await fetch(`${BASE}/api/keys`)).json()
-check('已记录使用时间', (afterUse.keys?.[0]?.lastUsedAt ?? 0) > 0,
+check('本机调用未消耗密钥', (afterUse.keys?.[0]?.lastUsedAt ?? 0) === 0,
   String(afterUse.keys?.[0]?.lastUsedAt ?? 0))
 
 console.log('\n=== 停用与启用 ===')
 const id = afterUse.keys[0].id
 await patch('/api/keys', { id, enabled: false })
 const disabled = await call(key)
-check('停用后拒绝', disabled.status === 401, `HTTP ${disabled.status}`)
+check('停用后本机仍可用', disabled.status === 200, `HTTP ${disabled.status}`)
 
 await patch('/api/keys', { id, enabled: true })
 const reenabled = await call(key)
@@ -106,9 +117,23 @@ const second = await post('/api/keys', { label: '第二个' })
 const secondKey = second.body.key
 await patch('/api/keys', { id, remove: true })
 const firstGone = await call(key)
-check('删除第一个后被拒绝', firstGone.status === 401, `HTTP ${firstGone.status}`)
+check('删除第一个后本机仍可用', firstGone.status === 200, `HTTP ${firstGone.status}`)
 const secondWorks = await call(secondKey)
 check('第二个仍然可用', secondWorks.status === 200, `HTTP ${secondWorks.status}`)
+
+// The endpoint binds to 127.0.0.1 only, so a connection from another address cannot be
+// staged on this machine at all — which is itself the first line of defence. What is
+// left to check is the rule the server applies to a peer address, and it is called here
+// rather than copied: a copy would pass while the real one regressed.
+const { isLocalAddress } = await import('../packages/server/src/index.js')
+
+console.log('\n=== 放行与校验的分界 ===')
+for (const address of ['127.0.0.1', '::1', '::ffff:127.0.0.1']) {
+  check(`本机 ${address} 放行`, isLocalAddress(address) === true)
+}
+for (const address of ['192.168.1.2', '10.0.0.5', '']) {
+  check(`远程 ${address || '(空)'} 需校验`, isLocalAddress(address) === false)
+}
 
 // Leave the machine as it was found: no keys, so the endpoint is open again.
 const finalList = await (await fetch(`${BASE}/api/keys`)).json()
