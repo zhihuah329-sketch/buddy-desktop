@@ -12,6 +12,7 @@
   import Sidebar from './lib/Sidebar.svelte'
   import Overview from './lib/Overview.svelte'
   import RegionPanel from './lib/RegionPanel.svelte'
+  import CodeBuddy from './lib/CodeBuddy.svelte'
   import Settings from './lib/Settings.svelte'
   import CommandCode from './lib/CommandCode.svelte'
   import Checkin from './lib/Checkin.svelte'
@@ -51,7 +52,7 @@
   /** The most recent state document, or null before the first load. */
   let state = $state(null)
   /** Every page the shell can show. */
-  const PAGE_IDS = ['overview', 'usage', 'cn', 'ai', 'checkin', 'command-code', 'access', 'settings']
+  const PAGE_IDS = ['overview', 'usage', 'cn', 'ai', 'codebuddy', 'checkin', 'command-code', 'access', 'settings']
 
   /** The page named by the URL hash, or the overview. */
   function pageFromHash() {
@@ -312,9 +313,9 @@
     if (busy !== null) return
     busy = 'usage'
     try {
-      const reply = await client.fetchUsage()
+      const reply = await client.refreshQuota()
+      state = reply.state ?? state
       usage = reply.usage ?? null
-      toast('good', '额度已刷新')
     } catch (error) {
       toast('bad', error.message)
     } finally {
@@ -451,6 +452,12 @@
           />
         {:else if page === 'checkin'}
           <Checkin appState={state} busyKind={busy} onRun={onRunCheckin} />
+        {:else if page === 'codebuddy'}
+          <CodeBuddy appState={state} onTest={() => client.testCodeBuddy()} onInstall={async () => {
+            const result = await client.installCodeBuddy()
+            await refresh({ quiet: true })
+            return result
+          }} />
         {:else if page === 'command-code'}
           <CommandCode
             appState={state}
@@ -481,6 +488,10 @@
             onScan={() => onScan(page)}
             onImport={() => onImport(page)}
             onRemove={onRemove}
+            onConfigure={() => go('settings')}
+            onCodeBuddy={() => go('codebuddy')}
+            selectedId={state?.settings?.[page === 'cn' ? 'selectedCnAccount' : 'selectedAiAccount'] ?? ''}
+            onSelect={(id) => run(`select:${page}`, () => client.selectAccount(page, id), (reply) => { state = reply.state })}
           />
         {/if}
       </div>

@@ -19,7 +19,11 @@
     onReadDesktop,
     onScan,
     onImport,
-    onRemove
+    onRemove,
+    selectedId,
+    onSelect,
+    onConfigure,
+    onCodeBuddy
   } = $props()
 
   /** Whether an action of this region is running. */
@@ -71,6 +75,10 @@
         <code class="path">{client.path}</code>
       {:else}
         <span class="missing">{client?.hint ?? '未检测到客户端'}</span>
+        <div class="setup-actions">
+          <button class="row-action" onclick={onConfigure}>手动选择客户端路径</button>
+          {#if region.site === 'cn'}<button class="row-action" onclick={onCodeBuddy}>改用 CodeBuddy 国内站</button>{/if}
+        </div>
       {/if}
     </div>
   </section>
@@ -80,7 +88,26 @@
   <section class="accounts">
     <div class="accounts-head">
       <span class="block-label">账号</span>
-      <span class="count">{accounts.length} 个</span>
+      {#if accounts.length > 0 || selectedId}
+        <label class="account-picker">
+          <span>转发账号</span>
+          <select disabled={anyBusy()} value={selectedId} onchange={(event) => {
+            const id = event.currentTarget.value
+            event.currentTarget.value = selectedId
+            onSelect(id)
+          }}>
+            <option value="">自动轮换</option>
+            {#if selectedId && !accounts.some((account) => account.id === selectedId)}
+              <option value={selectedId} disabled>所选账号已移除</option>
+            {/if}
+            {#each accounts as account (account.id)}
+              <option value={account.id} disabled={!account.usable}>
+                {account.label || account.id.slice(0, 8)}{account.usable ? '' : '（不可用）'}
+              </option>
+            {/each}
+          </select>
+        </label>
+      {/if}
     </div>
 
     {#if accounts.length === 0}
@@ -121,12 +148,18 @@
   </section>
 
   <section class="actions">
-    <button class="btn primary" disabled={anyBusy()} onclick={onReadDesktop}>
-      {#if running('desktop')}
-        <span class="spin"></span>
-      {/if}
-      {running('desktop') ? '读取中' : '从桌面版读取'}
-    </button>
+    {#if client?.path}
+      <button class="btn primary" disabled={anyBusy()} onclick={onReadDesktop}>
+        {#if running('desktop')}
+          <span class="spin"></span>
+        {/if}
+        {running('desktop') ? '读取中' : '从桌面版读取'}
+      </button>
+    {:else}
+      <!-- The read cannot work without a client, so it is not offered as a button
+           that would fail. The one useful action is the one that fixes the cause. -->
+      <a class="btn primary" href="#/settings">去设置里选择客户端</a>
+    {/if}
     <button class="btn" disabled={anyBusy()} onclick={onScan}>
       {running('scan') ? '扫描中' : '扫描凭据'}
     </button>
@@ -150,6 +183,17 @@
 </div>
 
 <style>
+  .setup-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 8px; }
+  .account-picker { display: flex; align-items: center; gap: 8px; color: var(--ink-mid); font-size: 12px; }
+  .account-picker select {
+    max-width: min(200px, 35vw);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 5px 8px;
+    background: var(--bg-input);
+    color: var(--ink);
+    font: inherit;
+  }
   .page {
     display: flex;
     flex-direction: column;
@@ -398,6 +442,12 @@
     font-size: 11.5px;
     cursor: pointer;
     transition: color 130ms var(--ease), border-color 130ms var(--ease), background 130ms var(--ease);
+  }
+
+  /* A link styled as the primary action, for the case where the action is a page
+     change rather than a request. */
+  a.btn {
+    text-decoration: none;
   }
 
   .btn:hover:not(:disabled) {

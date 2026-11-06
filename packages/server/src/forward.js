@@ -172,7 +172,10 @@ export async function forwardChat(options) {
   const body = preparePayload({ ...payload, model })
   const context = requestContext(body, '')
 
-  const excluded = new Set()
+  const excluded = new Set(options.selectedId
+    ? options.accounts.filter((account) => account.id !== options.selectedId).map((account) => account.id)
+    : [])
+  const initialExcluded = excluded.size
   let lastStatus = 503
   let lastMessage = '没有可用的账号。'
   let lastCode
@@ -226,6 +229,9 @@ export async function forwardChat(options) {
     return { ok: true, account, response, pool, ids }
   }
 
+  if (excluded.size === initialExcluded && options.selectedId) {
+    return { ok: false, status: 503, error: '所选账号当前不可用，请切换账号或恢复自动轮换。' }
+  }
   if (excluded.size === 0) {
     return {
       ok: false,

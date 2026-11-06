@@ -6,13 +6,46 @@
  * Nothing here is estimated. Request counts and successes are what the pool recorded
  * while serving; expiry comes from the token's own claim; the quota window is either
  * the reset time named in an upstream refusal or zero when nothing has run out. The
- * balance is whatever the last check-in run read from the billing endpoint — absent
- * until a check-in has happened, which is why it is nullable rather than zero.
+ * balance is queried directly from the billing endpoint. Check-in balances are
+ * retained as historical readings.
  *
  * @module @buddy-desktop/server/usage
  */
 
-import { readVault, resolveStateDir } from '@buddy-desktop/core'
+import { readVault, selectCheckinAccounts } from '@buddy-desktop/core'
+import { readBalance } from '@buddy-desktop/core/workbuddy'
+
+export function createQuotaReader(dataDir) {
+  let records = new Map()
+  let pending
+  async function refresh() {
+    const vault = readVault(dataDir)
+    if (!vault.ok) throw new Error('无法读取账号库。')
+    const targets = selectCheckinAccounts(vault.accounts)
+    const next = new Map()
+    for (const account of targets) {
+      let result
+      try {
+        result = await readBalance({
+          accessToken: account.accessToken,
+          uid: account.uid,
+          domain: account.domain ?? 'copilot.tencent.com'
+        }, AbortSignal.timeout(7000))
+      } catch {
+        result = { ok: false, error: '额度查询失败，请稍后重试。' }
+      }
+      next.set(account.id, { ...result, at: Date.now() })
+    }
+    records = next
+  }
+  return {
+    snapshot: () => records,
+    refresh() {
+      pending ??= refresh().finally(() => { pending = undefined })
+      return pending
+    }
+  }
+}
 
 /**
  * Build the usage document.
@@ -23,10 +56,10 @@ import { readVault, resolveStateDir } from '@buddy-desktop/core'
 export function buildUsage(options = {}) {
   const state = options.state ?? {}
   const checkin = options.checkin ?? null
+  const quota = options.quota ?? new Map()
   const now = Date.now()
 
-  // Balances arrive with the check-in run, keyed by the account label because that
-  // is what the billing endpoint was asked about.
+  // Preserve historical check-in balances separately, keyed by account ID.
   const balances = new Map()
   for (const record of checkin?.checkinAccounts ?? []) {
     if (typeof record.balance === 'number') {
@@ -40,6 +73,7 @@ export function buildUsage(options = {}) {
 
   const accounts = (state.accounts ?? []).map((account) => {
     const balance = balances.get(account.id)
+    const reading = account.site === 'cn' ? quota.get(account.id) : undefined
     const requests = account.requests ?? 0
     const failures = account.failures ?? 0
     const successes = account.successes ?? 0
@@ -59,7 +93,12 @@ export function buildUsage(options = {}) {
       quotaResetAt: account.quotaResetAt ?? 0,
       cooldownUntil: account.cooldownUntil ?? 0,
       lastError: account.lastError ?? '',
-      balance: balance?.balance ?? null,
+      balance: reading?.ok ? reading.balance : null,
+      capacity: reading?.ok ? reading.capacity : null,
+      used: reading?.ok ? reading.used : null,
+      quotaAt: reading?.at ?? null,
+      quotaError: reading?.ok === false ? reading.error : null,
+      lastCheckinBalance: balance?.balance ?? null,
       credits: balance?.credits ?? null,
       totalCredits: balance?.totalCredits ?? null
     }
@@ -69,7 +108,9 @@ export function buildUsage(options = {}) {
   function totalsFor(rows) {
     const requests = rows.reduce((sum, row) => sum + row.requests, 0)
     const successes = rows.reduce((sum, row) => sum + row.successes, 0)
-    const balances = rows.map((row) => row.balance).filter((value) => typeof value === 'number')
+    const known = rows.filter((row) => row.balance !== null)
+    const sumKnown = (field) => known.length > 0 && known.every((row) => row[field] !== null)
+      ? known.reduce((sum, row) => sum + row[field], 0) : null
     return {
       accounts: rows.length,
       usable: rows.filter((row) => row.usable).length,
@@ -77,7 +118,11 @@ export function buildUsage(options = {}) {
       successes,
       failures: rows.reduce((sum, row) => sum + row.failures, 0),
       successRate: requests === 0 ? null : successes / requests,
-      balance: balances.length === 0 ? null : balances.reduce((sum, value) => sum + value, 0),
+      balance: sumKnown('balance'),
+      capacity: sumKnown('capacity'),
+      used: sumKnown('used'),
+      quotaKnown: known.length,
+      quotaAt: rows.reduce((at, row) => Math.max(at, row.quotaAt ?? 0), 0) || null,
       credits: rows.reduce((sum, row) => sum + (row.credits ?? 0), 0),
       totalCredits: rows.reduce((sum, row) => sum + (row.totalCredits ?? 0), 0)
     }
@@ -91,7 +136,7 @@ export function buildUsage(options = {}) {
   // Accounts worth acting on: out of quota, or expiring within a week.
   const warnings = []
   for (const account of accounts) {
-    if (account.quotaResetAt > 0) {
+    if (account.quotaResetAt > now) {
       warnings.push({
         id: account.id,
         site: account.site,

@@ -244,6 +244,22 @@ Section "Install"
   ; The whole Electron tree plus the app, as staged.
   File /r "${STAGE}\\app\\*.*"
 
+  ; Install the official CLI for the current user when Node.js is available.
+  SearchPath $0 "node.exe"
+  StrCmp $0 "" 0 install_codebuddy
+  IfFileExists "$PROGRAMFILES64\\nodejs\\node.exe" 0 skip_codebuddy
+  StrCpy $0 "$PROGRAMFILES64\\nodejs\\node.exe"
+  install_codebuddy:
+  DetailPrint "检测并安装 CodeBuddy Code"
+  nsExec::ExecToLog '"$0" "$INSTDIR\\resources\\app\\node_modules\\@buddy-desktop\\server\\src\\codebuddy-cn-install.cjs"'
+  Pop $1
+  StrCmp $1 "0" codebuddy_done
+  DetailPrint "CodeBuddy 安装未完成，可在应用中重试"
+  Goto codebuddy_done
+  skip_codebuddy:
+  DetailPrint "未检测到 Node.js，可安装后在应用中继续"
+  codebuddy_done:
+
   ; Shortcuts: Start menu and desktop, like any Windows program.
   ;
   ; The desktop folder is resolved through the shell API rather than the DESKTOP

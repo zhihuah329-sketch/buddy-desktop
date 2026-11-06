@@ -25,7 +25,7 @@
   ]
 
   /** Which detail view the page is showing. */
-  let view = $state('calls')
+  let view = $state('accounts')
 
   function percent(value) {
     if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
@@ -34,7 +34,7 @@
 
   function amount(value) {
     if (typeof value !== 'number' || !Number.isFinite(value)) return '—'
-    return value.toFixed(2)
+    return value.toLocaleString('zh-CN', { maximumFractionDigits: 2 })
   }
 
   function daysText(days) {
@@ -84,6 +84,7 @@
   }
 
   const activity = $derived(usage?.activity ?? null)
+  const domestic = $derived(usage?.bySite?.cn)
 
   /** The busiest model's call count, so the bars are proportional to each other. */
   const busiest = $derived(activity?.byModel?.[0]?.calls ?? 0)
@@ -92,36 +93,35 @@
 <div class="page">
   <header class="page-head">
     <div>
-      <h1>使用额度</h1>
-      <span class="sub">调用明细来自本机记录 · 余额来自上次签到</span>
+      <h1>额度与用量</h1>
+      <span class="sub">查看 WorkBuddy 套餐积分和本机调用记录</span>
     </div>
     <button class="refresh" disabled={busy} onclick={onRefresh}>
-      {busy ? '刷新中' : '刷新'}
+      {busy ? '正在查询…' : '查询最新额度'}
     </button>
   </header>
 
   {#if usage === null}
     <div class="empty">正在读取…</div>
   {:else}
-    <section class="totals">
-      <div class="total">
-        <span class="total-label">总余额</span>
-        <span class="total-value">
-          {#if usage.total.balance === null}—{:else}{amount(usage.total.balance)}{/if}
+    <section class="quota">
+      <div class="quota-head">
+        <strong>国内版 · 本周期积分</strong>
+        <span aria-live="polite">
+          {#if busy}正在查询账号额度
+          {:else if domestic.quotaAt}更新于 {timeText(domestic.quotaAt)} · 已读取 {domestic.quotaKnown}/{domestic.accounts} 个账号
+          {:else if domestic.accounts === 0}尚未导入国内版账号
+          {:else}点击「查询最新额度」读取账号余额{/if}
         </span>
       </div>
-      <div class="total">
-        <span class="total-label">本机记录调用</span>
-        <span class="total-value">{activity?.total ?? 0}</span>
+      <div class="totals">
+        <div class="total featured"><span class="total-label">剩余积分</span><span class="total-value">{amount(domestic.balance)}</span></div>
+        <div class="total"><span class="total-label">本周期总额度</span><span class="total-value">{amount(domestic.capacity)}</span></div>
+        <div class="total"><span class="total-label">本周期已用</span><span class="total-value">{amount(domestic.used)}</span></div>
       </div>
-      <div class="total">
-        <span class="total-label">累计 token（约）</span>
-        <span class="total-value">{countText(activity?.tokens?.total ?? 0)}</span>
-      </div>
-      <div class="total">
-        <span class="total-label">成功率</span>
-        <span class="total-value">{percent(usage.total.successRate)}</span>
-      </div>
+      {#if domestic.quotaKnown > 0 && domestic.quotaKnown < domestic.accounts}
+        <div class="quota-note">当前汇总仅包含成功读取的账号。其他账号的状态见下方。</div>
+      {/if}
     </section>
 
     {#if activity !== null && activity.total > 0}
@@ -139,10 +139,6 @@
         </span>
         <span class="split-note">按字符估算 · 上游不返回真实 token 数</span>
       </div>
-    {/if}
-
-    {#if !usage.balanceKnown}
-      <div class="note">余额需要先签到一次才能读取，去「每日签到」运行一次即可。</div>
     {/if}
 
     <!-- The two views answer different questions, so they are tabs rather than one
@@ -265,17 +261,27 @@
                     <div class="bar">
                       <div class="bar-fill" class:low={(row.successRate ?? 1) < 0.8} style="width: {barWidth(row.successRate)}"></div>
                     </div>
-                    <span class="bar-text">{percent(row.successRate)}</span>
+                    <span class="bar-text">成功率 {percent(row.successRate)}</span>
                   </div>
                   <div class="row-stats">
                     <span>请求 <b>{row.requests}</b></span>
                     <span>成功 <b>{row.successes}</b></span>
                     <span>失败 <b class:bad-text={row.failures > 0}>{row.failures}</b></span>
-                    {#if row.balance !== null}<span>余额 <b>{amount(row.balance)}</b></span>{/if}
-                    {#if row.credits !== null}<span>积分 <b>{row.credits}/{row.totalCredits}</b></span>{/if}
+                    {#if row.balance !== null}
+                      <span>剩余 <b>{amount(row.balance)}</b> / 总额 <b>{amount(row.capacity)}</b> 积分</span>
+                      <span>已用 <b>{amount(row.used)}</b></span>
+                    {:else if row.site === 'ai'}
+                      <span>国际版积分未接入</span>
+                    {:else if row.lastCheckinBalance !== null}
+                      <span>上次签到余额 <b>{amount(row.lastCheckinBalance)}</b> 积分</span>
+                    {:else if !row.quotaError}
+                      <span>积分未查询</span>
+                    {/if}
                     <span>到期 <b>{daysText(row.daysToExpiry)}</b></span>
                   </div>
-                  {#if row.quotaResetAt > 0}
+                  {#if row.quotaError}
+                    <div class="row-warn">{row.quotaError}</div>
+                  {:else if row.quotaResetAt > usage.at}
                     <div class="row-warn">额度已用尽，等待重置</div>
                   {:else if row.lastError}
                     <div class="row-warn">{row.lastError}</div>
@@ -308,7 +314,8 @@
     display: flex;
     flex-direction: column;
     gap: 14px;
-    max-width: 660px;
+    max-width: 960px;
+    margin-inline: auto;
   }
 
   .page-head {
@@ -320,7 +327,7 @@
 
   .page-head h1 {
     margin: 0;
-    font-size: 17px;
+    font-size: 25px;
     font-weight: 600;
     letter-spacing: -0.3px;
   }
@@ -328,16 +335,16 @@
   .sub {
     display: block;
     margin-top: 2px;
-    font-size: 11px;
+    font-size: 12px;
     color: var(--ink-dim);
   }
 
   .refresh {
-    padding: 5px 12px;
+    padding: 8px 14px;
     border-radius: 7px;
-    border: 1px solid var(--line);
-    background: var(--bg-raised);
-    color: var(--ink-mid);
+    border: 1px solid color-mix(in srgb, var(--cn) 35%, var(--line));
+    background: color-mix(in srgb, var(--cn) 12%, var(--bg-raised));
+    color: var(--ink);
     font: inherit;
     font-size: 11.5px;
     cursor: pointer;
@@ -354,44 +361,59 @@
     cursor: default;
   }
 
-  .totals {
+  .quota {
+    padding: clamp(12px, 2.5vw, 22px);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    background: linear-gradient(135deg, color-mix(in srgb, var(--cn) 11%, var(--bg-card)), var(--bg-card) 62%);
+  }
+
+  .quota-head {
     display: flex;
-    gap: 1px;
-    border-radius: var(--r-md);
-    overflow: hidden;
-    border: 1px solid var(--line-soft);
-    background: var(--line-soft);
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    margin-bottom: 14px;
+  }
+
+  .quota-head span, .quota-note {
+    color: var(--ink-mid);
+    font-size: 12px;
+  }
+
+  .quota-note { margin-top: 12px; }
+
+  .totals {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 135px), 1fr));
+    gap: 10px;
   }
 
   .total {
-    flex: 1;
     display: flex;
     flex-direction: column;
     gap: 2px;
-    padding: 9px 11px;
-    background: var(--bg-deep);
+    padding: 11px 13px;
+    border: 1px solid var(--line-soft);
+    border-radius: 11px;
+    background: var(--bg-raised);
   }
 
   .total-label {
-    font-size: 9.5px;
+    font-size: 12px;
     color: var(--ink-dim);
     white-space: nowrap;
   }
 
   .total-value {
-    font-size: 15px;
+    font-size: clamp(18px, 3vw, 28px);
     font-weight: 600;
     color: var(--ink);
     font-variant-numeric: tabular-nums;
   }
 
-  .note {
-    padding: 8px 11px;
-    border-radius: var(--r-md);
-    background: var(--bg-input);
-    border: 1px solid var(--line-soft);
-    font-size: 10.5px;
-    color: var(--ink-dim);
+  .featured .total-value {
+    color: var(--cn);
   }
 
   .tabs {

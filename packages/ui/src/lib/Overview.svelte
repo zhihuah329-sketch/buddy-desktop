@@ -68,14 +68,20 @@
 <div class="page">
   <header class="page-head">
     <div>
-      <h1>概览</h1>
-      <span class="sub">两个区域互不影响，也互不回退</span>
+      <span class="eyebrow">BUDDY DESKTOP</span>
+      <h1>服务概览</h1>
+      <span class="sub">管理 WorkBuddy 转发线路与账号</span>
     </div>
     <div class="head-state" class:live={switches?.master}>
       <span class="head-dot"></span>
       {switches?.master ? '服务运行中' : '服务已停止'}
     </div>
   </header>
+
+  <button class="quota-link" onclick={() => onOpen('usage')}>
+    <span><strong>套餐额度</strong><small>查看本周期总额度、剩余积分和本机调用</small></span>
+    <span aria-hidden="true">→</span>
+  </button>
 
   <!-- The switches come first: they decide whether anything below can be used. -->
   <section class="block">
@@ -157,6 +163,28 @@
       </div>
     </section>
 
+    <!-- The upstream's anti-proxy check is not an account problem, so it is stated
+         above the account list rather than inside it: every account is fine, and the
+         user needs to know that before they start replacing them. -->
+    {#if appState.antiProxy?.open === true || (appState.antiProxy?.consecutive ?? 0) > 0}
+      <section class="anti-proxy">
+        <div class="anti-title">
+          {appState.antiProxy?.open === true
+            ? 'WorkBuddy 上游正在拒绝本程序的请求'
+            : `上游已拒绝 ${appState.antiProxy?.consecutive} 次`}
+        </div>
+        <div class="anti-body">
+          {appState.antiProxy?.hint ?? '上游已开启反代理检测。'}
+        </div>
+        <div class="anti-note">
+          账号没有被停用，额度也没有消耗；换账号解决不了这个问题。
+          {#if appState.antiProxy?.open === true}
+            程序会在约 1 分钟后自动重试。
+          {/if}
+        </div>
+      </section>
+    {/if}
+
     {#if attention.length > 0}
       <section class="attention">
         <div class="attention-title">以下账号暂时不能使用</div>
@@ -191,7 +219,8 @@
     display: flex;
     flex-direction: column;
     gap: 15px;
-    max-width: 640px;
+    max-width: 920px;
+    margin-inline: auto;
   }
 
   .page-head {
@@ -203,7 +232,7 @@
 
   .page-head h1 {
     margin: 0;
-    font-size: 17px;
+    font-size: 26px;
     font-weight: 600;
     letter-spacing: -0.3px;
   }
@@ -214,6 +243,24 @@
     font-size: 11px;
     color: var(--ink-dim);
   }
+
+  .eyebrow { color: var(--cn); font-size: 10px; font-weight: 650; letter-spacing: .15em; }
+  .quota-link {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 16px;
+    padding: 13px 16px;
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    background: color-mix(in srgb, var(--cn) 8%, var(--bg-card));
+    color: var(--ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+  .quota-link:hover { border-color: var(--cn); }
+  .quota-link small { display: block; color: var(--ink-mid); margin-top: 3px; }
 
   .head-state {
     display: inline-flex;
@@ -430,6 +477,35 @@
 
   .summary-value.attn {
     color: var(--warn);
+  }
+
+  /* Stated as a warning, not as an error: nothing the user owns is broken. */
+  .anti-proxy {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 10px 12px;
+    border-radius: var(--r-md);
+    background: var(--bad-glow);
+    border: 1px solid rgba(242, 86, 77, 0.28);
+  }
+
+  .anti-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--bad);
+  }
+
+  .anti-body {
+    font-size: 11px;
+    color: var(--ink-mid);
+    line-height: 1.55;
+  }
+
+  .anti-note {
+    font-size: 10.5px;
+    color: var(--ink-dim);
+    line-height: 1.5;
   }
 
   .attention {

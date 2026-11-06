@@ -302,6 +302,9 @@ async function billingPost(options) {
       continue
     }
 
+    if (response.status === 401 || response.status === 403) {
+      return { ok: false, unauthorized: true, error: 'WorkBuddy 登录已失效。请打开 WorkBuddy 客户端重新登录，然后点「从桌面版读取」。' }
+    }
     const text = await response.text()
     let payload
     try {
@@ -311,9 +314,6 @@ async function billingPost(options) {
       continue
     }
 
-    if (response.status === 401 || response.status === 403) {
-      return { ok: false, unauthorized: true, error: 'WorkBuddy 登录已失效。请打开 WorkBuddy 客户端重新登录，然后点「从桌面版读取」。' }
-    }
     if (!response.ok) {
       lastError = `WorkBuddy returned HTTP ${response.status}`
       continue
@@ -385,9 +385,28 @@ export async function readBalance(credential, signal) {
   const result = await billingPost({ credential, endpoint: 'get-user-resource-summary', v2: false, signal })
   if (!result.ok) return result
   const packages = result.payload?.data?.Packages
-  if (!Array.isArray(packages)) return { ok: false, error: 'WorkBuddy 没有返回额度明细。' }
-  const remaining = packages.reduce((sum, entry) => sum + Math.max(0, number(entry?.CycleRemainCapacity)), 0)
-  return { ok: true, balance: remaining }
+  if (Number(result.payload?.code) !== 0 || !Array.isArray(packages)) {
+    return { ok: false, error: `WorkBuddy 未返回有效的额度明细（错误码 ${result.payload?.code ?? 'unknown'}）。` }
+  }
+  function sumCapacity(field) {
+    let sum = 0
+    for (const entry of packages) {
+      const value = entry?.[field]
+      if (typeof value !== 'number' && (typeof value !== 'string' || !value.trim())) return null
+      const capacity = Number(value)
+      if (!Number.isFinite(capacity)) return null
+      sum += Math.max(0, capacity)
+    }
+    return sum
+  }
+  const balance = sumCapacity('CycleRemainCapacity')
+  if (balance === null) return { ok: false, error: 'WorkBuddy 返回的剩余积分字段不完整。' }
+  return {
+    ok: true,
+    balance,
+    capacity: sumCapacity('CycleTotalCapacity'),
+    used: sumCapacity('CycleUsedCapacity')
+  }
 }
 
 /** Coerce a provider-reported number, treating anything unusable as zero. */

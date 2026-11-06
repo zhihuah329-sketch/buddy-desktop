@@ -18,6 +18,7 @@
  */
 
 import { createServer } from 'node:http'
+import { once } from 'node:events'
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -58,11 +59,24 @@ import {
 
 import { buildPool, forwardChat, pumpAnswer } from './forward.js'
 import { Switches } from './switches.js'
-import { buildUsage } from './usage.js'
+import { buildUsage, createQuotaReader } from './usage.js'
+import codeBuddy from './codebuddy-cn-runtime.cjs'
+import { streamCodeBuddy } from './codebuddy-cn-stream.mjs'
 import { forwardToCommandCode } from './cc-forward.js'
 import { readSettings, writeSettings } from './settings.js'
 import { countChars, estimateMessageTokens, estimateTokens, recordCall, summariseActivity } from './activity.js'
 import { createKey, publicKeys, updateKey, verifyKey } from './api-keys.js'
+
+const CODEBUDDY_CN_MODEL = 'deepseek-v4.1-flash-codebuddy-cn'
+
+function codeBuddyState() {
+  try {
+    const runtime = codeBuddy.findCodeBuddy()
+    return { installed: true, managed: runtime.managed === true, model: CODEBUDDY_CN_MODEL }
+  } catch (error) {
+    return { installed: false, model: CODEBUDDY_CN_MODEL, error: error.message }
+  }
+}
 
 /** Content types for the small set of files this server will serve. */
 const MIME = {
@@ -388,7 +402,8 @@ export function buildState(options = {}) {
     electronDebug,
     // What a client may put in `model`, and where to point it. Published here so
     // the page can show the endpoint instead of the user having to guess it.
-    models: MODEL_IDS,
+    models: [...MODEL_IDS, CODEBUDDY_CN_MODEL],
+    codeBuddy: codeBuddyState(),
     endpoint: `http://${servedHost}:${servedPort}/v1`,
     // Command Code is a separate channel with its own models and its own credential,
     // so it is described separately rather than folded into the region list.
@@ -442,6 +457,7 @@ export async function startServer(options = {}) {
   // Three switches: a master gate for the endpoint, and one per region so a pool
   // can be silenced on its own.
   const switches = new Switches()
+  const quotaReader = createQuotaReader(options.dataDir)
 
   const scheduler = new CheckinScheduler({
     dataDir: options.dataDir,
@@ -522,7 +538,7 @@ export async function startServer(options = {}) {
             id: model,
             object: 'model',
             created: now,
-            owned_by: 'workbuddy'
+            owned_by: model === CODEBUDDY_CN_MODEL ? 'codebuddy-cn' : 'workbuddy'
           }))
       res.writeHead(200, {
         'content-type': 'application/json; charset=utf-8',
@@ -603,7 +619,7 @@ export async function startServer(options = {}) {
         return send(403, { error: '来源不被允许。' })
       }
       try {
-        const result = await handleApi(req, url, send, { ...options, ...served, scheduler, switches })
+        const result = await handleApi(req, url, send, { ...options, ...served, scheduler, switches, quotaReader })
         if (result !== undefined) return send(200, result)
         return
       } catch (error) {
@@ -639,7 +655,7 @@ export async function startServer(options = {}) {
  */
 async function handleApi(req, url, send, options) {
   const route = url.pathname.slice('/api/'.length)
-  const dataDir = url.searchParams.get('dataDir') ?? undefined
+  const dataDir = url.searchParams.get('dataDir') || options.dataDir
   // The scheduler and the serving identity travel with every state read, so a reply
   // built anywhere in this handler still carries today's check-in result.
   const scope = {
@@ -771,13 +787,56 @@ async function handleApi(req, url, send, options) {
   // state and the page sends which one changed.
   // Usage and quota. Assembled from the same accounts the page already shows, plus
   // whatever the last check-in read, so the figures cannot disagree with them.
-  if (route === 'usage' && req.method === 'GET') {
-    const snapshot = buildState(options)
-    const usage = buildUsage({ state: snapshot, checkin: snapshot.checkin })
+  if (route === 'usage' && (req.method === 'GET' || req.method === 'POST')) {
+    const reader = !url.searchParams.get('dataDir') ? options.quotaReader : undefined
+    if (req.method === 'POST') {
+      if (!isLocalClient(req)) return send(403, { error: '请在本机刷新额度。' })
+      if (!reader) return send(400, { error: '只能刷新当前账号库的额度。' })
+      await reader.refresh()
+    }
+    const snapshot = buildState(scope)
+    const usage = buildUsage({ state: snapshot, checkin: snapshot.checkin, quota: reader?.snapshot() })
     // The call record is what answers "which account and model served what"; the
     // pool's counters only know how many requests happened.
     usage.activity = summariseActivity(options.dataDir)
-    return { usage }
+    return { state: snapshot, usage }
+  }
+
+  if (route === 'account-selection' && req.method === 'POST') {
+    if (!isLocalClient(req)) return send(403, { error: '请在本机切换账号。' })
+    const { site, id } = (await readJson(req)) ?? {}
+    if (!['cn', 'ai'].includes(site) || typeof id !== 'string') {
+      return send(400, { error: '请选择有效的区域与账号。' })
+    }
+    if (id !== '') {
+      const state = buildState(options)
+      if (!state.accounts.some((account) => account.id === id && account.site === site && account.usable)) {
+        return send(400, { error: '该账号当前不可用，请刷新后重试。' })
+      }
+    }
+    const key = site === 'cn' ? 'selectedCnAccount' : 'selectedAiAccount'
+    writeSettings(options.dataDir, { [key]: id })
+    return { ok: true, state: buildState(options) }
+  }
+
+  if (route === 'codebuddy/test' && req.method === 'POST') {
+    if (!isLocalClient(req)) return send(403, { error: '请在本机测试 CodeBuddy。' })
+    if (!options.switches.allows('cn')) return { ok: false, error: '请先打开服务总开关和国内版线路。' }
+    try {
+      await codeBuddy.askCodeBuddy('Reply with OK only.', AbortSignal.timeout(30_000))
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error.message }
+    }
+  }
+  if (route === 'codebuddy/install' && req.method === 'POST') {
+    if (!isLocalClient(req)) return send(403, { error: '请在本机安装 CodeBuddy。' })
+    try {
+      if (!codeBuddyState().installed) await codeBuddy.installCodeBuddy()
+      return { ok: true, codeBuddy: codeBuddyState() }
+    } catch (error) {
+      return { ok: false, error: error.message }
+    }
   }
 
   if (route === 'switches' && req.method === 'POST') {
@@ -951,6 +1010,120 @@ async function* readSseFrames(body) {
   if (buffer.trim().length > 0) yield buffer
 }
 
+function apiError(res, status, message, code, { upstreamCode, headers } = {}) {
+  if (res.destroyed || res.writableEnded) return
+  res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers })
+  const type = code === 'invalid_api_key' ? 'authentication_error'
+    : code.startsWith('WORKBUDDY_') || status >= 500 ? 'upstream_error' : 'invalid_request_error'
+  res.end(JSON.stringify({ error: { message, type, code,
+    ...(upstreamCode == null ? {} : { upstream_code: upstreamCode }) } }))
+}
+
+
+async function writeEvent(res, data, signal) {
+  if (signal.aborted || res.destroyed) return
+  const frame = typeof data === 'string' ? data : JSON.stringify(data)
+  if (!res.write('data: ' + frame + '\n\n')) {
+    try { await once(res, 'drain', { signal }) }
+    catch (error) { if (!signal.aborted) throw error }
+  }
+}
+
+async function handleCodeBuddyChat(payload, res, options) {
+  if (!options.switches.allows('cn')) return apiError(res, 503, '请先打开国内版服务。', 'WORKBUDDY_DISABLED')
+  const runtime = codeBuddyState()
+  if (!runtime.installed) return apiError(res, 503, runtime.error, 'WORKBUDDY_CODEBUDDY_UNAVAILABLE')
+  const choice = payload.tool_choice
+  const readTool = choice !== 'none' && (typeof choice !== 'object' || choice?.function?.name === 'read') &&
+    Array.isArray(payload.tools) && payload.tools.some((tool) =>
+    tool?.type === 'function' && tool.function?.name === 'read' && tool.function.parameters?.properties?.file_path?.type === 'string')
+  const readCallIds = new Set()
+  const messages = []
+  for (const message of payload.messages) {
+    if (readTool && message?.role === 'assistant' && Array.isArray(message.tool_calls)) {
+      for (const call of message.tool_calls) {
+        if (call?.function?.name === 'read' && typeof call.id === 'string') readCallIds.add(call.id)
+      }
+    }
+    if (!['user', 'assistant'].includes(message?.role) &&
+        !(message?.role === 'tool' && readCallIds.has(message.tool_call_id))) continue
+    const parts = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content
+    if (!Array.isArray(parts)) continue
+    const content = []
+    for (const part of parts) {
+      if (part?.type === 'text' && typeof part.text === 'string') content.push(part)
+      else if (part?.type === 'image_url') {
+        const url = part.image_url?.url
+        const match = typeof url === 'string' && /^data:(image\/(?:png|jpeg|gif|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(url)
+        if (!match || match[2].length > 12 * 1024 * 1024) return apiError(res, 400, '请发送内嵌的 PNG、JPEG、GIF 或 WebP 图片。', 'invalid_image')
+        const data = Buffer.from(match[2], 'base64')
+        content.push({ type: 'image', attachment: { data, bytes: data.length, mediaType: match[1] } })
+      }
+    }
+    messages.push({ role: message.role, content })
+  }
+  const controller = new AbortController()
+  res.once('close', () => controller.abort())
+  const attachments = { async readImage(ref) { return { ref, data: ref.data } } }
+  let text = ''
+  let reasoning = ''
+  let usage
+  let finish
+  let toolCall
+  const base = { id: `chatcmpl-codebuddy-${Date.now().toString(36)}`, created: Math.floor(Date.now() / 1000), model: CODEBUDDY_CN_MODEL }
+  const frame = { ...base, object: 'chat.completion.chunk' }
+  async function startStream() {
+    if (res.headersSent) return
+    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' })
+    await writeEvent(res, { ...frame, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] }, controller.signal)
+  }
+  for await (const event of streamCodeBuddy({ messages, readTool, signal: controller.signal }, attachments)) {
+    if (event.type === 'text-delta' || event.type === 'reasoning-delta') {
+      if (payload.stream === true) {
+        if (controller.signal.aborted) return
+        await startStream()
+        const field = event.type === 'text-delta' ? 'content' : 'reasoning_content'
+        await writeEvent(res, { ...frame, choices: [{ index: 0, delta: { [field]: event.text }, finish_reason: null }] }, controller.signal)
+      } else if (event.type === 'text-delta') text += event.text
+      else reasoning += event.text
+    }
+    if (event.type === 'read-tool-call') {
+      toolCall = { id: `call_read_${base.id.slice(-8)}`, type: 'function', function: { name: 'read', arguments: event.arguments } }
+      if (payload.stream === true) {
+        await startStream()
+        await writeEvent(res, { ...frame, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, ...toolCall }] }, finish_reason: null }] }, controller.signal)
+      }
+    }
+    if (event.type === 'usage') {
+      const { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoningTokens } = event.usage
+      const prompt = inputTokens + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+      usage = { prompt_tokens: prompt, completion_tokens: outputTokens, total_tokens: prompt + outputTokens,
+        ...(cacheReadTokens === undefined ? {} : { prompt_tokens_details: { cached_tokens: cacheReadTokens } }),
+        ...(reasoningTokens === undefined ? {} : { completion_tokens_details: { reasoning_tokens: reasoningTokens } }) }
+    }
+    if (event.type === 'finish') finish = event.reason
+  }
+  if (controller.signal.aborted) return
+  if (finish?.kind !== 'stop') {
+    const message = finish?.failure?.message ?? 'CodeBuddy 没有返回完整回复。'
+    if (!res.headersSent) return apiError(res, 502, message, 'WORKBUDDY_CODEBUDDY_ERROR')
+    await writeEvent(res, { error: { message, type: 'upstream_error', code: 'WORKBUDDY_CODEBUDDY_ERROR' } }, controller.signal)
+    return res.end()
+  }
+  const finishReason = toolCall ? 'tool_calls' : 'stop'
+  if (payload.stream === true) {
+    await startStream()
+    await writeEvent(res, { ...frame, choices: [{ index: 0, delta: {}, finish_reason: finishReason }] }, controller.signal)
+    if (usage) await writeEvent(res, { ...frame, choices: [], usage }, controller.signal)
+    await writeEvent(res, '[DONE]', controller.signal)
+    return res.end()
+  }
+  res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+  res.end(JSON.stringify({ ...base, object: 'chat.completion', ...(usage ? { usage } : {}), choices: [{ index: 0, message: {
+    role: 'assistant', content: toolCall ? null : text, ...(toolCall ? { tool_calls: [toolCall] } : {}), ...(reasoning ? { reasoning_content: reasoning } : {})
+  }, finish_reason: finishReason }] }))
+}
+
 async function handleChat(req, res, options) {
   const fail = (status, message) => {
     res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
@@ -977,6 +1150,11 @@ async function handleChat(req, res, options) {
   // model name reach the wrong bill. `/v1/cc/...` means Command Code.
   const pathname = new URL(req.url, 'http://127.0.0.1').pathname
   const wantsCommandCode = pathname.startsWith('/v1/cc/')
+
+  if (!wantsCommandCode && requested === CODEBUDDY_CN_MODEL) {
+    if (!Array.isArray(payload.messages)) return fail(400, 'messages 必须是数组。')
+    return handleCodeBuddyChat(payload, res, options)
+  }
 
   if (wantsCommandCode) {
     if (!CC_MODELS.some((entry) => entry.id === requested)) {
@@ -1043,6 +1221,11 @@ async function handleChat(req, res, options) {
 
   const built = buildPool(options.dataDir)
   if (built.ok !== true) return fail(503, built.error)
+  const settings = readSettings(options.dataDir)
+  const selectedId = settings[parsed.site === 'cn' ? 'selectedCnAccount' : 'selectedAiAccount']
+  if (selectedId && !built.accounts.some((account) => account.site === parsed.site && account.id === selectedId)) {
+    return fail(503, '所选账号已移除，请切换账号或恢复自动轮换。')
+  }
 
   const controller = new AbortController()
   // A client that hangs up mid-answer must stop the upstream request too,
@@ -1069,6 +1252,8 @@ async function handleChat(req, res, options) {
 
   const forwarded = await forwardChat({
     pool: built.pool,
+    accounts: built.accounts,
+    selectedId,
     site: parsed.site,
     model: parsed.upstream,
     payload,

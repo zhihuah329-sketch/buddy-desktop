@@ -52,6 +52,8 @@ export function createClient() {
   return {
     /** Everything the page renders. */
     fetchState: () => request('/state'),
+    testCodeBuddy: () => request('/codebuddy/test', { method: 'POST' }),
+    installCodeBuddy: () => request('/codebuddy/install', { method: 'POST' }),
     /** Scan for credential files, optionally for one region. */
     discover: (site) => request('/discover', { method: 'POST', body: site ? { site } : {} }),
     /** Import every readable credential file. */
@@ -70,6 +72,8 @@ export function createClient() {
 
     /** Usage and quota across every account. */
     fetchUsage: () => request('/usage'),
+    refreshQuota: () => request('/usage', { method: 'POST' }),
+    selectAccount: (site, id) => request('/account-selection', { method: 'POST', body: { site, id } }),
     /** Set one of the service switches: master, cn or ai. */
     setSwitch: (name, enabled) => request('/switches', { method: 'POST', body: { name, enabled } }),
 

@@ -33,6 +33,7 @@
     { id: 'usage', label: '使用额度', icon: 'chart' },
     { id: 'cn', label: '国内版', icon: 'dot', region: 'cn' },
     { id: 'ai', label: '国际版', icon: 'dot', region: 'ai' },
+    { id: 'codebuddy', label: 'CodeBuddy 国内站', icon: 'link' },
     { id: 'checkin', label: '每日签到', icon: 'check' },
     { id: 'command-code', label: 'Command Code', icon: 'key' },
     { id: 'access', label: '接入与密钥', icon: 'link' },

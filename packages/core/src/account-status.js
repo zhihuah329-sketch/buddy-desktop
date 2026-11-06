@@ -267,6 +267,12 @@ function workbuddyCandidates(site = 'cn') {
       list.push(join(local, 'Programs', 'WorkBuddyAI', exe))
     }
   }
+  for (const root of [local, process.env.ProgramFiles, process.env['ProgramFiles(x86)']].filter(Boolean)) {
+    const folders = site === 'ai' ? ['WorkBuddyAI', 'WorkBuddy AI'] : ['WorkBuddy', 'Work Buddy']
+    for (const folder of folders) {
+      for (const exe of wanted.exe) list.push(join(root, folder, exe))
+    }
+  }
   // Installs moved to another drive are common — this machine keeps the CN client
   // on F: and the international one on F: as well — so look one level deep in the
   // usual roots rather than scanning the whole filesystem.
@@ -310,17 +316,6 @@ export function resolveClientForSite(options = {}) {
   const explicit = site === 'ai' ? options.intlPath : options.configured
   if (typeof explicit === 'string' && explicit.length > 0 && existsSync(explicit)) {
     return { path: explicit, source: 'configured', site }
-  }
-  if (typeof explicit === 'string' && explicit.length > 0 && !existsSync(explicit)) {
-    // A configured path that does not exist must not fall through to discovery:
-    // the user stated which client to use, so reporting it as missing is more
-    // useful than silently opening a different one.
-    return {
-      path: undefined,
-      source: 'missing',
-      site,
-      hint: `配置的${site === 'ai' ? '国际版' : '国内版'}客户端路径不存在：${explicit}`
-    }
   }
 
   // A path the daemon recorded for this region is the most precise answer: it
@@ -387,7 +382,7 @@ export function resolveClientForSite(options = {}) {
     // what would open the wrong client, so it is not accepted on its own.
     const nameProvesRegion = site === 'ai' && namedIntl
     if (site === 'ai' && !nameProvesRegion && attributed.ai === undefined) continue
-    if (!nameProvesRegion && otherAttributed !== undefined && attributed[site] === undefined) continue
+    if (site === 'cn' && /[\\/]workbuddy\s*ai[\\/]/i.test(candidate)) continue
     return { path: candidate, source: nameProvesRegion ? 'named' : 'discovered', site }
   }
   return {

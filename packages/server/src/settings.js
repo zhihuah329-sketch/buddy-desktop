@@ -10,9 +10,8 @@
  *
  * ## Where
  *
- * A single `settings.json` in the app's data directory. It holds only paths — never a
- * credential — so it is safe to leave readable, and a user can edit it by hand if the
- * interface is not reachable.
+ * A single `settings.json` in the app's data directory stores client paths and
+ * selected account IDs.
  *
  * @module @buddy-desktop/server/settings
  */
@@ -25,7 +24,9 @@ const DEFAULTS = {
   /** The CN client executable, when the user chose one. */
   workbuddyPath: '',
   /** The international client executable, when the user chose one. */
-  workbuddyIntlPath: ''
+  workbuddyIntlPath: '',
+  selectedCnAccount: '',
+  selectedAiAccount: ''
 }
 
 /** The file these live in. */
@@ -53,7 +54,9 @@ export function readSettings(dataDir) {
     if (parsed === null || typeof parsed !== 'object') return { ...DEFAULTS }
     return {
       workbuddyPath: typeof parsed.workbuddyPath === 'string' ? parsed.workbuddyPath : '',
-      workbuddyIntlPath: typeof parsed.workbuddyIntlPath === 'string' ? parsed.workbuddyIntlPath : ''
+      workbuddyIntlPath: typeof parsed.workbuddyIntlPath === 'string' ? parsed.workbuddyIntlPath : '',
+      selectedCnAccount: typeof parsed.selectedCnAccount === 'string' ? parsed.selectedCnAccount : '',
+      selectedAiAccount: typeof parsed.selectedAiAccount === 'string' ? parsed.selectedAiAccount : ''
     }
   } catch {
     return { ...DEFAULTS }
