@@ -2,15 +2,46 @@ import bridge from './codebuddy-cn-runtime.cjs'
 import { Readable } from 'node:stream'
 
 const READ_MARKER = 'BUDDY_DSH_READ '
+const DSML_TAG = String.raw`<\s*\|\s*\|\s*DSML\s*\|\s*\|\s*`
+const DSML_CLOSE = String.raw`<\s*/\s*\|\s*\|\s*DSML\s*\|\s*\|\s*`
+const DSML_OPENING = /<\s*[|｜]\s*[|｜]\s*DSML\s*[|｜]\s*[|｜]\s*(?:tool_)?calls\s*>/i
 
-function readArguments(line) {
-  const input = JSON.parse(line.slice(READ_MARKER.length))
+function readArguments(input) {
   const { file_path, offset = 1, limit = 80 } = input ?? {}
   if (typeof file_path !== 'string' || !file_path.trim() || file_path.length > 4096 || file_path.includes('\0') ||
       !Number.isSafeInteger(offset) || offset < 1 || !Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
     throw new Error('CodeBuddy 返回了无效的读文件参数。')
   }
   return JSON.stringify({ file_path, offset, limit })
+}
+
+function dsmlReadArguments(envelope) {
+  // Normalize the separators in tags only, so full-width characters in paths survive.
+  const normalized = envelope.replace(/(<\s*\/?\s*)[|｜]\s*[|｜](\s*DSML\s*)[|｜]\s*[|｜]/gi, '$1||$2||')
+  const calls = new RegExp(String.raw`^${DSML_TAG}((?:tool_)?calls)\s*>([\s\S]*?)${DSML_CLOSE}\1\s*>\s*$`, 'i').exec(normalized)
+  if (!calls) return
+  const invoke = new RegExp(String.raw`^\s*${DSML_TAG}invoke\s+name="read"\s*>([\s\S]*?)${DSML_CLOSE}invoke\s*>\s*$`, 'i').exec(calls[2])
+  if (!invoke) return
+  const parameter = new RegExp(String.raw`\s*${DSML_TAG}parameter\s+name="(file_path|path|offset|limit)"\s+string="(true|false)"\s*>([^<]*)${DSML_CLOSE}parameter\s*>`, 'iy')
+  const input = Object.create(null)
+  let rest = invoke[1].trim()
+  while (rest) {
+    parameter.lastIndex = 0
+    const match = parameter.exec(rest)
+    if (!match) return
+    const name = match[1].toLowerCase().replace(/^path$/, 'file_path')
+    if (Object.hasOwn(input, name)) return
+    const value = match[3]
+    if (name === 'file_path') {
+      if (match[2].toLowerCase() !== 'true') return
+      input[name] = value
+    } else {
+      if (!/^\d+$/.test(value.trim())) return
+      input[name] = Number(value)
+    }
+    rest = rest.slice(parameter.lastIndex).trim()
+  }
+  return readArguments(input)
 }
 
 async function taskFrom({ messages, purpose, system, signal, readTool }, attachments) {
@@ -77,10 +108,15 @@ export async function* streamCodeBuddy(options, attachments) {
     let index = 0
     let pendingText = ''
     let readRequest = ''
+    let dsmlRequest
     let checkingRead = options.readTool === true
     for await (const { type, text: fragment } of deltas) {
       let text = fragment
       if (type === 'text') {
+        if (dsmlRequest !== undefined) {
+          if (dsmlRequest.length <= 8192) dsmlRequest += text.slice(0, 8193 - dsmlRequest.length)
+          continue
+        }
         if (checkingRead) {
           readRequest += text
           const candidate = readRequest.trimStart()
@@ -93,11 +129,13 @@ export async function* streamCodeBuddy(options, attachments) {
           checkingRead = false
         }
         text = pendingText + text
-        if (/<\s*[|｜]\s*[|｜]\s*DSML\s*[|｜]\s*[|｜]\s*(?:tool_)?calls\s*>/i.test(text)) {
-          throw new Error('CodeBuddy 返回了不支持的工具调用。此线路只转交 DSH 的只读文件请求。')
-        }
         pendingText = ''
-        const lastOpening = text.lastIndexOf('<')
+        const opening = DSML_OPENING.exec(text)
+        if (opening) {
+          dsmlRequest = text.slice(opening.index, opening.index + 8193)
+          text = text.slice(0, opening.index)
+        }
+        const lastOpening = dsmlRequest === undefined ? text.lastIndexOf('<') : -1
         if (lastOpening >= 0 && text.length - lastOpening <= 96 && !text.slice(lastOpening).includes('>')) {
           const suffix = text.slice(lastOpening).replace(/\s/g, '').replaceAll('｜', '|').toUpperCase()
           if (['<||DSML||CALLS>', '<||DSML||TOOL_CALLS>'].some((marker) => marker.startsWith(suffix))) {
@@ -116,7 +154,18 @@ export async function* streamCodeBuddy(options, attachments) {
       yield { type: `${type}-delta`, index, text }
     }
     const isReadRequest = checkingRead && readRequest.trimStart().startsWith(READ_MARKER)
-    const tail = pendingText + (isReadRequest ? '' : readRequest)
+    let args
+    let toolNotice = ''
+    if (isReadRequest || dsmlRequest !== undefined) {
+      try {
+        if (isReadRequest) args = readArguments(JSON.parse(readRequest.trimStart().slice(READ_MARKER.length)))
+        else if (options.readTool && dsmlRequest.length <= 8192) args = dsmlReadArguments(dsmlRequest)
+      } catch {}
+      if (!args) toolNotice = options.readTool
+        ? '\n\n这次工具请求未执行。要读取文件，请提供工作区内的文件路径。'
+        : '\n\n这次工具请求未执行。请在 DSH 中启用原生 read 工具，或直接提供文件内容。'
+    }
+    const tail = pendingText + (isReadRequest ? '' : readRequest) + toolNotice
     if (tail) {
       if (active?.type !== 'text') {
         if (active) yield { type: 'block-end', index: index++, block: active }
@@ -127,12 +176,7 @@ export async function* streamCodeBuddy(options, attachments) {
       yield { type: 'text-delta', index, text: tail }
     }
     if (active) yield { type: 'block-end', index, block: active }
-    if (isReadRequest) {
-      let args
-      try { args = readArguments(readRequest.trimStart()) }
-      catch { throw new Error('CodeBuddy 返回了无效的读文件参数。') }
-      yield { type: 'read-tool-call', arguments: args }
-    }
+    if (args) yield { type: 'read-tool-call', arguments: args }
     const valid = (value) => Number.isInteger(value) && value >= 0
     if (valid(usage?.prompt_tokens) && valid(usage?.completion_tokens)) {
       const cached = usage.prompt_cache_hit_tokens ?? usage.prompt_tokens_details?.cached_tokens

@@ -43,6 +43,19 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     }
     return send({ id, result: { stopReason: 'end_turn' } })
   }
+  if (params.prompt[0].text.includes('DSML fixture')) {
+    const name = params.prompt[0].text.includes('unsafe DSML fixture') ? 'Bash' : 'Read'
+    for (const text of [
+      '< ｜ ｜ DS', 'ML ｜ ｜ tool_calls>',
+      '< | | DSML | | invoke name="' + name + '">',
+      '< | | DSML | | parameter name="file_path" string="true">notes｜fixture.txt</ | | DSML | | parameter>',
+      '< | | DSML | | parameter name="offset" string="false">2</ | | DSML | | parameter>',
+      '</ | | DSML | | invoke>', '</ ｜ ｜ DSML ｜ ｜ tool_calls>'
+    ]) send({ method: 'session/update', params: { update: {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }
+    } } })
+    return send({ id, result: { stopReason: 'end_turn' } })
+  }
   if (params.prompt[0].text.includes('Read fixture.txt.')) {
     const result = params.prompt[0].text.includes('fixture value: kiwi')
       ? ['The file says kiwi.'] : ['BUDDY_', 'DSH_READ {"file_path":"fixture.txt","offset":1,"limit":80}']
@@ -96,10 +109,10 @@ try {
   assert.match(body, /"content":"OK"/)
   assert.match(body, /data: \[DONE\]/)
   const tool = await prompt('Emit a tool marker.')
-  assert.equal(tool.status, 502)
-  const toolError = (await tool.json()).error
-  assert.match(toolError.message, /工具调用/)
-  assert.doesNotMatch(toolError.message, /DSML/)
+  assert.equal(tool.status, 200)
+  const toolNotice = await tool.text()
+  assert.match(toolNotice, /启用原生 read 工具/)
+  assert.doesNotMatch(toolNotice, /DSML|tool_calls/)
   const tools = [{ type: 'function', function: {
     name: 'read', parameters: { type: 'object', properties: { file_path: { type: 'string' } } }
   } }]
@@ -114,6 +127,20 @@ try {
     { role: 'tool', tool_call_id: call.id, content: 'fixture value: kiwi' }
   ] }).then((res) => res.text())
   assert.match(withResult, /The file says kiwi/)
+  const dsml = await prompt('Read DSML fixture.', { tools }).then((res) => res.text())
+  assert.match(dsml, /"finish_reason":"tool_calls"/)
+  assert.match(dsml, /notes｜fixture\.txt/)
+  assert.match(dsml, /\\"offset\\":2/)
+  assert.doesNotMatch(dsml, /DSML/)
+  for (const [content, options] of [
+    ['Read unsafe DSML fixture.', { tools }],
+    ['Read DSML fixture.', { tools, tool_choice: 'none' }]
+  ]) {
+    const blocked = await prompt(content, { ...options, stream: false }).then((res) => res.json())
+    assert.equal(blocked.choices[0].finish_reason, 'stop')
+    assert.match(blocked.choices[0].message.content, /工具请求未执行/)
+    assert.doesNotMatch(blocked.choices[0].message.content, /DSML/)
+  }
   console.log('Clean profile: detected CLI, reported login requirement, and streamed after simulated CN login.')
 } finally {
   await server.close()
