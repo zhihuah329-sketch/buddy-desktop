@@ -100,7 +100,7 @@ export async function* streamCodeBuddy(options, attachments) {
     let usage
     void bridge.askCodeBuddyDetailed(task, signal, undefined, (type, text) => {
       deltas.push({ type, text })
-    }).then((result) => {
+    }, options.thinking).then((result) => {
       usage = result.usage
       deltas.push(null)
     }, (error) => deltas.destroy(error))

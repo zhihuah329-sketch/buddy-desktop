@@ -391,6 +391,10 @@ export function preparePayload(input) {
   }
   delete v.reasoning
 
+  // Flash defaults to reasoning unless the caller explicitly turns it off.
+  if (v.model === 'deepseek-v4.1-flash' && v.reasoning_effort === undefined && v.thinking?.type !== 'disabled') {
+    v.reasoning_effort = 'high'
+  }
   const effort = String(v.reasoning_effort ?? '').trim().toLowerCase()
   if (EFFORT_IDS.includes(effort)) v.reasoning_effort = effort
   else delete v.reasoning_effort
@@ -419,9 +423,13 @@ export function normalizeFrame(value, model) {
   const choice = Array.isArray(value.choices) ? value.choices[0] : undefined
   if (choice !== undefined && choice !== null) {
     const delta = {}
-    for (const k of ['role', 'content', 'reasoning_content']) {
+    for (const k of ['role', 'content', 'reasoning_content', 'refusal']) {
       const s = choice.delta?.[k]
       if (typeof s === 'string' && s.length > 0) delta[k] = s
+    }
+    if (delta.reasoning_content === undefined) {
+      const reasoning = choice.delta?.reasoning ?? choice.delta?.thinking
+      if (typeof reasoning === 'string' && reasoning.length > 0) delta.reasoning_content = reasoning
     }
     if (Array.isArray(choice.delta?.tool_calls) && choice.delta.tool_calls.length > 0) {
       delta.tool_calls = choice.delta.tool_calls

@@ -18,7 +18,7 @@
  * @module @buddy-desktop/desktop/main
  */
 
-const { app, BrowserWindow, Menu, Tray, nativeImage, shell, dialog, clipboard } = require('electron')
+const { app, BrowserWindow, Menu, Tray, nativeImage, nativeTheme, shell, dialog, clipboard } = require('electron')
 const { join } = require('node:path')
 const { appendFileSync } = require('node:fs')
 const { tmpdir } = require('node:os')
@@ -142,8 +142,7 @@ function createWindow(url) {
     height: 800,
     minWidth: 560,
     minHeight: 480,
-    // The page is dark; a white flash before it loads is jarring.
-    backgroundColor: '#0f1115',
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#101318' : '#f5f7fa',
     title: 'Buddy Desktop',
     show: false,
     autoHideMenuBar: true,
@@ -179,21 +178,16 @@ function createWindow(url) {
     }
   })
 
-  // A hidden window is not idle: Chromium keeps its heaps and caches regardless. This
-  // asks it to hand back what it can once the window has been out of sight for a
-  // while, which is the state this app spends most of its life in. The window is still
-  // created, so showing it again is instant — only the unused memory is released.
+  // Release the hidden renderer after a minute. Showing the app recreates the page
+  // from the local server, retaining its theme and account settings.
   mainWindow.on('hide', () => {
     if (reclaimTimer !== null) clearTimeout(reclaimTimer)
     reclaimTimer = setTimeout(() => {
       reclaimTimer = null
       if (mainWindow === null || mainWindow.isVisible()) return
-      mainWindow.webContents.session.clearCache().catch(() => {})
-      // Not exposed before the page has finished loading, hence the guard.
-      if (typeof mainWindow.webContents.setBackgroundThrottling === 'function') {
-        mainWindow.webContents.setBackgroundThrottling(true)
-      }
-      trace('reclaimed memory while hidden')
+      // The local server and tray keep running after the renderer is released.
+      mainWindow.destroy()
+      trace('released hidden renderer')
     }, RECLAIM_AFTER_MS)
     // Node's timer must not hold the process open on its own.
     if (typeof reclaimTimer.unref === 'function') reclaimTimer.unref()
@@ -254,7 +248,10 @@ if (app.requestSingleInstanceLock() === false) {
   app.quit()
 } else {
   app.on('second-instance', () => {
-    if (mainWindow === null) return
+    if (mainWindow === null) {
+      if (pageUrl !== null) createWindow(pageUrl)
+      return
+    }
     mainWindow.show()
     mainWindow.focus()
   })

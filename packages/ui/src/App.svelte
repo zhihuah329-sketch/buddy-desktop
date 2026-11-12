@@ -94,6 +94,7 @@
   let scanResult = $state(null)
 
   let timer = null
+  let refreshing = false
   /** Stops following the system preference; set on mount. */
   let stopTheme = null
 
@@ -130,18 +131,23 @@
   }
 
   async function refresh({ quiet = false } = {}) {
+    if (refreshing) return
+    refreshing = true
     try {
-      state = await client.fetchState()
-    } catch (error) {
-      if (!quiet) toast('bad', error.message)
-    }
-    // Usage is a second read because it depends on the same pool; a failure here
-    // must not blank the page that already loaded.
-    try {
-      const reply = await client.fetchUsage()
-      usage = reply.usage ?? null
-    } catch {
-      // A failure leaves whatever was already shown; a blank page would be worse.
+      try {
+        state = await client.fetchState()
+      } catch (error) {
+        if (!quiet) toast('bad', error.message)
+      }
+      // Usage is a second read because it depends on the same pool.
+      try {
+        const reply = await client.fetchUsage()
+        usage = reply.usage ?? null
+      } catch {
+        // Retain the previous figures while the local API recovers.
+      }
+    } finally {
+      refreshing = false
     }
   }
 
@@ -392,8 +398,13 @@
     return REGIONS.find((region) => region.site === id)
   }
 
+  function onVisibilityChange() {
+    if (!document.hidden) refresh({ quiet: true })
+  }
+
   onMount(() => {
     window.addEventListener('hashchange', onHashChange)
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     // Read once at start: the key list decides whether the endpoint is protected.
     client.fetchKeys().then((reply) => {
@@ -411,11 +422,14 @@
     refresh()
     // Quota windows expire while the window is open, so the view is re-read rather
     // than only after an action.
-    timer = setInterval(() => refresh({ quiet: true }), 20000)
+    timer = setInterval(() => {
+      if (!document.hidden) refresh({ quiet: true })
+    }, 20000)
   })
 
   onDestroy(() => {
     window.removeEventListener('hashchange', onHashChange)
+    document.removeEventListener('visibilitychange', onVisibilityChange)
     stopTheme?.()
     clearInterval(timer)
   })

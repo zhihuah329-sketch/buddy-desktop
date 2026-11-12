@@ -24,6 +24,7 @@ export {
   eligibility,
   parseModel,
   preparePayload,
+  normalizeFrame,
   requestContext,
   shouldRotate,
   streamFailurePlan,

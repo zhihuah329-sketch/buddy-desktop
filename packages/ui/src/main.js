@@ -4,3 +4,4 @@ import './theme.css'
 import './style.css'
 
 mount(App, { target: document.getElementById('app') })
+document.querySelector('.boot')?.remove()

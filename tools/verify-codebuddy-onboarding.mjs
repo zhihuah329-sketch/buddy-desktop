@@ -26,6 +26,7 @@ const { createInterface } = require('node:readline')
 const { existsSync } = require('node:fs')
 const { join } = require('node:path')
 const send = (obj) => console.log(JSON.stringify({ jsonrpc: '2.0', ...obj }))
+let thoughtLevel
 createInterface({ input: process.stdin }).on('line', (line) => {
   const { id, method, params } = JSON.parse(line)
   if (method === 'initialize') return send({ id, result: { protocolVersion: 1 } })
@@ -33,8 +34,15 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (!existsSync(join(process.env.USERPROFILE, 'cn-test-login'))) {
       return send({ id, error: { code: -32000, message: 'Authentication required' } })
     }
-    return send({ id, result: { sessionId: 'test-session' } })
+    return send({ id, result: { sessionId: 'test-session', configOptions: [{
+      id: 'thought_level', options: [{ value: 'high' }, { value: 'enabled' }, { value: 'disabled' }]
+    }] } })
   }
+  if (method === 'session/set_config_option') {
+    thoughtLevel = params.value
+    return send({ id, result: {} })
+  }
+  if (!thoughtLevel) return send({ id, error: { code: -32602, message: 'Thinking config was not sent' } })
   if (params.prompt[0].text === 'Emit a tool marker.') {
     for (const text of ['< | | DS', 'ML | | calls>', '< | | DSML | | invoke>']) {
       send({ method: 'session/update', params: { update: {
@@ -64,7 +72,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     } } })
     return send({ id, result: { stopReason: 'end_turn' } })
   }
-  send({ method: 'session/update', params: { update: {
+  if (thoughtLevel !== 'disabled') send({ method: 'session/update', params: { update: {
     sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'test thought' }
   } } })
   send({ method: 'session/update', params: { update: {
@@ -74,13 +82,14 @@ createInterface({ input: process.stdin }).on('line', (line) => {
 })
 `
 
-const server = await startServer({ port: 0 })
+const server = await startServer({ port: 0, autoInstallCodeBuddy: false })
 try {
   const base = `http://127.0.0.1:${server.port}`
   const readState = () => fetch(base + '/api/state').then((res) => res.json())
   assert.equal((await readState()).codeBuddy.installed, false)
   mkdirSync(binDir, { recursive: true })
   writeFileSync(join(binDir, 'codebuddy'), fakeCli)
+  writeFileSync(join(binDir, '..', 'package.json'), JSON.stringify({ name: '@tencent-ai/codebuddy-code', version: '0.0.0-test' }))
   const snapshot = await readState()
   assert.equal(snapshot.codeBuddy.installed, true)
   assert.equal(snapshot.accounts.length, 0)
@@ -108,6 +117,8 @@ try {
   assert.match(body, /"reasoning_content":"test thought"/)
   assert.match(body, /"content":"OK"/)
   assert.match(body, /data: \[DONE\]/)
+  const noThinking = await prompt('Say OK.', { thinking: { type: 'disabled' } }).then((res) => res.text())
+  assert.doesNotMatch(noThinking, /reasoning_content/)
   const tool = await prompt('Emit a tool marker.')
   assert.equal(tool.status, 200)
   const toolNotice = await tool.text()

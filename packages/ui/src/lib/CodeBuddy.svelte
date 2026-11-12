@@ -1,6 +1,7 @@
 <script>
   let { appState, onTest, onInstall } = $props()
   const route = $derived(appState?.codeBuddy)
+  const installingNow = $derived(installing || route?.installation?.phase === 'installing')
   let testing = $state(false)
   let result = $state(null)
   let installing = $state(false)
@@ -33,16 +34,16 @@
   <section>
     <h2>安装与登录</h2>
     <ol>
-      <li>安装 Node.js 后，点击「安装 CodeBuddy」。已安装官方 CLI 的用户可以直接登录。</li>
+      <li>打开软件时会自动检测 CodeBuddy，缺少时自动运行 <code>npm install -g @tencent-ai/codebuddy-code</code>。首次安装需要 Node.js 和网络。</li>
       <li>在 PowerShell 运行 <code>{route?.managed ? managedLogin : 'codebuddy'}</code>，选择 <strong>Log in via Chinese Site</strong>，在浏览器完成登录。</li>
       <li>回到这里刷新状态，再点「测试线路」。测试会发出一次短模型请求。</li>
     </ol>
-    <p class:good={route?.installed} aria-live="polite">{route?.installed ? '已检测到 CodeBuddy Code，登录状态请以线路测试为准。' : route?.error ?? '正在检测本机 CLI…'}</p>
+    <p class:good={route?.installed} aria-live="polite">{installingNow ? '正在全局安装官方 CLI，请稍候…' : route?.installed ? `已检测到 CodeBuddy Code${route.version ? ' ' + route.version : ''}，登录状态请以线路测试为准。` : route?.error ?? '正在检测本机 CLI…'}</p>
     {#if !route?.installed}
-      <button disabled={installing || !route} onclick={install}>{installing ? '正在安装…' : '安装 CodeBuddy'}</button>
+      <button disabled={installingNow || !route} onclick={install}>{installingNow ? '正在安装…' : '重试安装 CodeBuddy'}</button>
     {/if}
     {#if installResult}<p aria-live="polite" class:good={installResult.ok}>{installResult.ok ? '安装完成。请按上面的步骤登录。' : installResult.error}</p>{/if}
-    <button disabled={testing || !route?.installed} onclick={test}>{testing ? '正在测试…' : '测试线路'}</button>
+    <button disabled={testing || installingNow || !route?.installed} onclick={test}>{testing ? '正在测试…' : '测试线路'}</button>
     {#if result}<p aria-live="polite" class:good={result.ok}>{result.ok ? '连接成功，模型已返回回复。' : result.error}</p>{/if}
   </section>
   <section>

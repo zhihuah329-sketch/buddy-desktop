@@ -70,11 +70,12 @@ import { createKey, publicKeys, updateKey, verifyKey } from './api-keys.js'
 const CODEBUDDY_CN_MODEL = 'deepseek-v4.1-flash-codebuddy-cn'
 
 function codeBuddyState() {
+  const installation = codeBuddy.installationState()
   try {
     const runtime = codeBuddy.findCodeBuddy()
-    return { installed: true, managed: runtime.managed === true, model: CODEBUDDY_CN_MODEL }
+    return { installed: true, managed: runtime.managed === true, version: runtime.version, installation, model: CODEBUDDY_CN_MODEL }
   } catch (error) {
-    return { installed: false, model: CODEBUDDY_CN_MODEL, error: error.message }
+    return { installed: false, installation, model: CODEBUDDY_CN_MODEL, error: installation.error ?? error.message }
   }
 }
 
@@ -639,6 +640,8 @@ export async function startServer(options = {}) {
     })
   })
 
+  if (options.autoInstallCodeBuddy !== false) void codeBuddy.ensureCodeBuddy().catch(() => {})
+
   return {
     server,
     host,
@@ -832,7 +835,7 @@ async function handleApi(req, url, send, options) {
   if (route === 'codebuddy/install' && req.method === 'POST') {
     if (!isLocalClient(req)) return send(403, { error: '请在本机安装 CodeBuddy。' })
     try {
-      if (!codeBuddyState().installed) await codeBuddy.installCodeBuddy()
+      await codeBuddy.ensureCodeBuddy()
       return { ok: true, codeBuddy: codeBuddyState() }
     } catch (error) {
       return { ok: false, error: error.message }
@@ -961,6 +964,7 @@ async function relayFrames(response, res, options) {
 
   // Collected: the deltas are joined and returned as one OpenAI-shaped body.
   let content = ''
+  let reasoning = ''
   let modelUsed = options.model
   for await (const raw of frames) {
     for (const line of raw.split('\n')) {
@@ -972,6 +976,8 @@ async function relayFrames(response, res, options) {
         if (typeof frame.model === 'string') modelUsed = frame.model
         const delta = frame.choices?.[0]?.delta?.content
         if (typeof delta === 'string') content += delta
+        const thought = frame.choices?.[0]?.delta?.reasoning_content
+        if (typeof thought === 'string') reasoning += thought
       } catch {
         // A frame that does not parse contributes nothing.
       }
@@ -983,7 +989,7 @@ async function relayFrames(response, res, options) {
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
     model: modelUsed,
-    choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }]
+    choices: [{ index: 0, message: { role: 'assistant', content, ...(reasoning ? { reasoning_content: reasoning } : {}) }, finish_reason: 'stop' }]
   }))
 }
 
@@ -1032,6 +1038,7 @@ async function writeEvent(res, data, signal) {
 async function handleCodeBuddyChat(payload, res, options) {
   if (!options.switches.allows('cn')) return apiError(res, 503, '请先打开国内版服务。', 'WORKBUDDY_DISABLED')
   const runtime = codeBuddyState()
+  if (runtime.installation.phase === 'installing') return apiError(res, 503, 'CodeBuddy 正在自动安装，请等待安装完成。', 'WORKBUDDY_CODEBUDDY_INSTALLING', { headers: { 'retry-after': '10' } })
   if (!runtime.installed) return apiError(res, 503, runtime.error, 'WORKBUDDY_CODEBUDDY_UNAVAILABLE')
   const choice = payload.tool_choice
   const readTool = choice !== 'none' && (typeof choice !== 'object' || choice?.function?.name === 'read') &&
@@ -1077,7 +1084,15 @@ async function handleCodeBuddyChat(payload, res, options) {
     res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' })
     await writeEvent(res, { ...frame, choices: [{ index: 0, delta: { role: 'assistant' }, finish_reason: null }] }, controller.signal)
   }
-  for await (const event of streamCodeBuddy({ messages, readTool, signal: controller.signal }, attachments)) {
+  if (payload.stream === true) {
+    await startStream()
+    const heartbeat = setInterval(() => {
+      if (!res.destroyed && !res.writableEnded) res.write(': keep-alive\n\n')
+    }, 15000)
+    heartbeat.unref()
+    res.once('close', () => clearInterval(heartbeat))
+  }
+  for await (const event of streamCodeBuddy({ messages, readTool, thinking: payload.thinking?.type !== 'disabled' && payload.reasoning?.enabled !== false && payload.reasoning_effort !== 'none', signal: controller.signal }, attachments)) {
     if (event.type === 'text-delta' || event.type === 'reasoning-delta') {
       if (payload.stream === true) {
         if (controller.signal.aborted) return
@@ -1315,6 +1330,7 @@ async function handleChat(req, res, options) {
   }
   const joined = chunks.join('')
   let content = ''
+  let reasoning = ''
   let model_used = model
   for (const line of joined.split('\n')) {
     if (!line.startsWith('data:')) continue
@@ -1325,6 +1341,8 @@ async function handleChat(req, res, options) {
       if (typeof frame.model === 'string') model_used = frame.model
       const delta = frame.choices?.[0]?.delta?.content
       if (typeof delta === 'string') content += delta
+      const thought = frame.choices?.[0]?.delta?.reasoning_content
+      if (typeof thought === 'string') reasoning += thought
     } catch {
       // A frame that does not parse contributes nothing.
     }
@@ -1352,7 +1370,7 @@ async function handleChat(req, res, options) {
     object: 'chat.completion',
     created: Math.floor(Date.now() / 1000),
     model: model_used,
-    choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }]
+    choices: [{ index: 0, message: { role: 'assistant', content, ...(reasoning ? { reasoning_content: reasoning } : {}) }, finish_reason: 'stop' }]
   }))
 }
 

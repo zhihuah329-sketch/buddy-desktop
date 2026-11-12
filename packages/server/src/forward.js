@@ -26,6 +26,7 @@ import {
   HOSTS,
   parseModel,
   preparePayload,
+  normalizeFrame,
   requestContext,
   shouldRotate,
   streamFailurePlan,
@@ -137,17 +138,15 @@ async function* sseValues(body) {
   let buffer = ''
   for await (const chunk of body) {
     buffer += decoder.decode(chunk, { stream: true })
-    let index = buffer.indexOf('\n\n')
+    let index = buffer.indexOf('\n')
     while (index >= 0) {
-      const block = buffer.slice(0, index)
-      buffer = buffer.slice(index + 2)
-      for (const line of block.split('\n')) {
-        if (!line.startsWith('data:')) continue
+      const line = buffer.slice(0, index).trimEnd()
+      buffer = buffer.slice(index + 1)
+      if (line.startsWith('data:')) {
         const data = line.slice(5).trim()
-        if (data.length === 0) continue
         if (data === '[DONE]') {
           yield { done: true }
-          continue
+          return
         }
         try {
           yield { value: JSON.parse(data) }
@@ -155,7 +154,7 @@ async function* sseValues(body) {
           // A frame that does not parse is skipped rather than fatal.
         }
       }
-      index = buffer.indexOf('\n\n')
+      index = buffer.indexOf('\n')
     }
   }
 }
@@ -226,7 +225,7 @@ export async function forwardChat(options) {
     }
 
     // The account answered; its recorded outcome is decided when the stream ends.
-    return { ok: true, account, response, pool, ids }
+    return { ok: true, account, response, pool, ids, model: payload.model ?? model }
   }
 
   if (excluded.size === initialExcluded && options.selectedId) {
@@ -282,8 +281,10 @@ export async function* pumpAnswer(forwarded, signal) {
       failure = message
       break
     }
+    const normalized = normalizeFrame(value, forwarded.model)
+    if (normalized === null) continue
     emitted += 1
-    yield encoder.encode(`data: ${JSON.stringify(value)}\n\n`)
+    yield encoder.encode(`data: ${JSON.stringify(normalized)}\n\n`)
   }
 
   if (completed === true) {

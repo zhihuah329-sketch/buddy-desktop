@@ -140,13 +140,15 @@ Nothing is uploaded. The server binds to `127.0.0.1` only and rejects requests w
 
 ## CodeBuddy 国内站
 
-安装 Buddy Desktop 时，如果 Windows 已安装 Node.js，安装程序会检测并自动补装官方 CodeBuddy Code CLI。已有 CLI 会继续使用。缺少 Node.js 或网络安装失败时，可以打开左侧「CodeBuddy 国内站」，补装后点「安装 CodeBuddy」重试。
+打开 Buddy Desktop 时会在后台检测官方 CLI，缺少时自动运行 `npm install -g @tencent-ai/codebuddy-code`。已有 CLI 会继续使用。首次安装需要 Node.js 和网络，安装进度、版本或错误会显示在「CodeBuddy 国内站」，失败后可点击「重试安装 CodeBuddy」。
 
 在 PowerShell 运行页面上的登录命令，选择 **Log in via Chinese Site**，在浏览器完成登录，再回到应用点「测试线路」。此线路使用官方 CLI 的登录会话，不需要 WorkBuddy 桌面版或账号池。
 
 在 DSH 添加自定义模型，协议选 **OpenAI Chat Completions**，Base URL 用页面显示的地址（通常为 `http://127.0.0.1:5178/v1`），模型填 `deepseek-v4.1-flash-codebuddy-cn`。输入支持文本和内嵌图片，建议上下文设为 8192 tokens。
 
 当 DSH 提供原生 `read` 工具时，CodeBuddy 可以请求 DSH 读取文本文件。DSH 负责工作区权限，Buddy Desktop 不直接打开模型指定的文件。
+
+Flash 默认开启思考，并通过 `reasoning_content` 流式传递上游实际返回的思考内容。窗口隐藏一分钟后会释放渲染进程，本地转发服务保持运行。
 
 WorkBuddy 国内版、国际版仍可各自指定转发账号或恢复自动轮换。如果客户端未被检测到，可在设置中填写对应的可执行文件路径。「额度与用量」可主动查询国内版剩余积分、本周期总额度和已用积分。
 

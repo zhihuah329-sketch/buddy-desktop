@@ -4,9 +4,21 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Buddy Desktop</title>
+    <script>
+      try {
+        const mode = new URLSearchParams(location.search).get('theme') || localStorage.getItem('buddy-desktop-theme')
+        const dark = mode === 'dark' || (mode !== 'light' && matchMedia('(prefers-color-scheme: dark)').matches)
+        document.documentElement.dataset.theme = dark ? 'dark' : 'light'
+      } catch {}
+    </script>
+    <style>
+      html { background: #f5f7fa; color: #253044; }
+      html[data-theme="dark"] { background: #101318; color: #e6e9ef; }
+      .boot { display: grid; place-content: center; min-height: 100vh; margin: 0; font: 14px system-ui, sans-serif; }
+    </style>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app"><p class="boot" role="status">正在打开 Buddy Desktop…</p></div>
     <script type="module" src="/src/main.js"></script>
   </body>
 </html>

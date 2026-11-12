@@ -1,13 +1,17 @@
 const { execFile, spawn } = require('node:child_process')
-const { mkdtempSync, rmSync, statSync } = require('node:fs')
+const { mkdtempSync, readFileSync, rmSync, statSync } = require('node:fs')
 const { tmpdir } = require('node:os')
 const { delimiter, dirname, isAbsolute, join } = require('node:path')
 const { createInterface } = require('node:readline')
 
 const packageBin = ['node_modules', '@tencent-ai', 'codebuddy-code', 'bin', 'codebuddy']
 const model = 'deepseek-v4.1-flash'
-const npmPackage = '@tencent-ai/codebuddy-code@2.180.0'
+const npmPackage = '@tencent-ai/codebuddy-code'
 let installation
+let globalPrefix
+let installState = { phase: 'idle' }
+
+function installationState() { return { ...installState } }
 
 function firstFile(paths) {
   return paths.find((path) => {
@@ -17,7 +21,7 @@ function firstFile(paths) {
 }
 
 function pathDirs(env) {
-  return (env.PATH ?? '').split(delimiter).map((entry) => entry.trim().replace(/^"|"$/g, '')).filter(isAbsolute)
+  return (env.PATH ?? env.Path ?? '').split(delimiter).map((entry) => entry.trim().replace(/^"|"$/g, '')).filter(isAbsolute)
 }
 
 function managedPrefix(env) {
@@ -35,44 +39,75 @@ function findNode(env, nodeExecutable) {
 function findCodeBuddy(env = process.env, nodeExecutable) {
   const windows = process.platform === 'win32'
   const dirs = pathDirs(env)
-  const prefixes = [env.npm_config_prefix, env.APPDATA && join(env.APPDATA, 'npm'),
+  const prefixes = [globalPrefix, env.npm_config_prefix, env.APPDATA && join(env.APPDATA, 'npm'),
     managedPrefix(env), ...dirs].filter(Boolean)
   const native = firstFile([env.BUDDY_CODEBUDDY_EXE, ...dirs.map((dir) => join(dir, windows ? 'codebuddy.exe' : 'codebuddy'))])
   if (native) return { executable: native, args: [] }
-  const cli = firstFile([
-    env.BUDDY_CODEBUDDY_ENTRY,
-    ...prefixes.flatMap((prefix) => [join(prefix, ...packageBin), join(prefix, '..', 'lib', ...packageBin)])
-  ])
+  const candidates = prefixes.flatMap((prefix) => [join(prefix, ...packageBin), join(prefix, '..', 'lib', ...packageBin)])
+  const cli = firstFile([env.BUDDY_CODEBUDDY_ENTRY]) ?? candidates.find((path) => {
+    if (!firstFile([path])) return false
+    try {
+      const pkg = JSON.parse(readFileSync(join(dirname(path), '..', 'package.json'), 'utf8'))
+      return pkg.name === npmPackage && typeof pkg.version === 'string'
+    } catch { return false }
+  })
   if (!cli) throw new Error('未找到 CodeBuddy Code。请先运行 npm install -g @tencent-ai/codebuddy-code。')
   const node = findNode(env, nodeExecutable)
   if (!node) throw new Error('已找到 CodeBuddy Code，但未找到 Node.js。请安装 Node.js 并重新打开 Buddy Desktop。')
   const managed = managedPrefix(env)
-  return { executable: node, args: [cli], managed: Boolean(managed && cli === join(managed, ...packageBin)) }
+  let version
+  try { version = JSON.parse(readFileSync(join(dirname(cli), '..', 'package.json'), 'utf8')).version } catch {}
+  return { executable: node, args: [cli], version, managed: Boolean(managed && cli === join(managed, ...packageBin)) }
 }
 
 function installCodeBuddy(env = process.env) {
   if (installation) return installation
   const node = findNode(env)
-  const prefix = managedPrefix(env)
   const npm = node && firstFile([
     join(dirname(node), 'node_modules', 'npm', 'bin', 'npm-cli.js'),
     join(dirname(node), '..', 'lib', 'node_modules', 'npm', 'bin', 'npm-cli.js')
   ])
-  if (!prefix || !npm) {
-    return Promise.reject(new Error('未找到 Node.js 随附的 npm。请安装 Node.js 后重新打开 Buddy Desktop。'))
+  if (!npm) {
+    const error = new Error('未找到 Node.js 随附的 npm。请安装 Node.js 后点击重试。')
+    installState = { phase: 'error', error: error.message }
+    return Promise.reject(error)
   }
-  installation = new Promise((resolve, reject) => {
-    execFile(node, [npm, 'install', '--prefix', prefix, '--registry', 'https://registry.npmjs.org',
-      '--no-audit', '--no-fund', '--ignore-scripts', '--fetch-retries=1', npmPackage],
-    { timeout: 240_000, windowsHide: true, env }, (error) => {
-      if (error || !firstFile([join(prefix, ...packageBin)])) {
-        reject(new Error('自动安装失败。请检查网络后重试，或在 PowerShell 手动安装官方 CLI。'))
-      } else resolve()
+  installState = { phase: 'installing', startedAt: Date.now() }
+  const runNpm = (args, timeout) => new Promise((resolve, reject) => {
+    execFile(node, [npm, ...args], { timeout, windowsHide: true, env, maxBuffer: 2 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) {
+        const code = /\b(EACCES|EPERM|ECONNRESET|ENOTFOUND|ETIMEDOUT|EAI_AGAIN|ENOSPC)\b/.exec(stderr ?? '')?.[1]
+        const detail = error.killed ? '安装超时' : code ?? 'npm 安装失败'
+        reject(Object.assign(new Error(`${detail}。请检查网络、磁盘空间或全局 npm 目录权限后点击重试。`), { code }))
+      } else resolve(stdout.trim())
     })
+  })
+  installation = (async () => {
+    globalPrefix = await runNpm(['prefix', '--global'], 15_000)
+    if (!isAbsolute(globalPrefix)) throw new Error('npm 返回了无效的全局安装目录。')
+    const args = ['install', '--global', npmPackage, '--prefer-offline', '--no-audit', '--no-fund',
+      '--fetch-retries=2', '--fetch-retry-mintimeout=1000', '--fetch-retry-maxtimeout=5000', '--fetch-timeout=60000']
+    try { await runNpm(args, 300_000) }
+    catch (error) {
+      if (!['ECONNRESET', 'ETIMEDOUT', 'EAI_AGAIN'].includes(error.code)) throw error
+      await runNpm(args, 300_000)
+    }
+    findCodeBuddy(env)
+    installState = { phase: 'ready', finishedAt: Date.now() }
+  })().catch((error) => {
+    installState = { phase: 'error', error: error.message }
+    throw error
   }).finally(() => { installation = undefined })
   return installation
 }
-function askCodeBuddyDetailed(task, signal, nodeExecutable, onDelta) {
+
+async function ensureCodeBuddy() {
+  if (installation) return installation
+  try { findCodeBuddy(); return } catch {}
+  return installCodeBuddy()
+}
+
+function askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking = true) {
   return new Promise((resolve, reject) => {
     const runtime = findCodeBuddy(process.env, nodeExecutable)
     const cwd = mkdtempSync(join(tmpdir(), 'buddy-codebuddy-'))
@@ -93,13 +128,22 @@ function askCodeBuddyDetailed(task, signal, nodeExecutable, onDelta) {
     let reasoning = ''
     let usage
     let finished = false
-    const abort = () => finish(new Error('CodeBuddy task cancelled.'))
-    const timeout = setTimeout(() => finish(new Error('CodeBuddy did not finish within 120 seconds.')), 120_000)
+    let promptSent = false
+    const transportError = (message) => Object.assign(new Error(message), { retryable: !promptSent })
+    const abort = () => finish(new Error('CodeBuddy 请求已取消。'))
+    let idleTimeout
+    function resetIdleTimeout() {
+      clearTimeout(idleTimeout)
+      idleTimeout = setTimeout(() => finish(transportError('CodeBuddy 长时间没有响应，请检查网络后重试。')), promptSent ? 120_000 : 30_000)
+    }
+    resetIdleTimeout()
+    const timeout = setTimeout(() => finish(new Error('CodeBuddy 请求超过 10 分钟，请缩短任务后重试。')), 600_000)
 
     function finish(error) {
       if (finished) return
       finished = true
       clearTimeout(timeout)
+      clearTimeout(idleTimeout)
       signal?.removeEventListener('abort', abort)
       for (const request of pending.values()) request.reject(error ?? new Error('CodeBuddy connection closed.'))
       pending.clear()
@@ -122,15 +166,17 @@ function askCodeBuddyDetailed(task, signal, nodeExecutable, onDelta) {
       })
     }
 
-    child.on('error', () => finish(new Error('Could not start the official CodeBuddy client.')))
-    child.stdin.on('error', () => finish(new Error('CodeBuddy closed its input.')))
-    child.on('close', () => finish(new Error('CodeBuddy exited before completing the task. Check that its Chinese site login is active.')))
+    child.on('error', () => finish(transportError('无法启动 CodeBuddy，请检查 CLI 安装。')))
+    child.stdin.on('error', () => finish(transportError('CodeBuddy 连接已断开。')))
+    child.on('close', () => finish(transportError('CodeBuddy 提前退出，请检查国内站登录和网络。')))
     signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) return abort()
 
     reader.on('line', (line) => {
+      if (finished) return
       let message
       try { message = JSON.parse(line) } catch { return }
+      resetIdleTimeout()
       if (message.method === 'session/update') {
         const update = message.params?.update
         if (update?.content?.type === 'text' && update.content.text) {
@@ -155,7 +201,10 @@ function askCodeBuddyDetailed(task, signal, nodeExecutable, onDelta) {
         pending.delete(message.id)
         if (message.error) {
           const code = Number.isInteger(message.error.code) ? ` (ACP ${message.error.code})` : ''
-          request.reject(new Error(`CodeBuddy 拒绝了请求${code}。请运行 codebuddy，确认已登录 Chinese Site 且账号可用。`))
+          const auth = /auth|login|sign.?in|credential|登录/i.test(message.error.message ?? '')
+          request.reject(new Error(auth
+            ? `CodeBuddy 需要重新登录${code}。请运行 codebuddy，选择 Chinese Site 完成登录。`
+            : `CodeBuddy 拒绝了请求${code}。请检查模型权限、额度或输入内容后重试。`))
         } else request.resolve(message.result)
       }
     })
@@ -166,10 +215,18 @@ function askCodeBuddyDetailed(task, signal, nodeExecutable, onDelta) {
       })
       if (init.protocolVersion !== 1) throw new Error('CodeBuddy returned an unsupported ACP version.')
       const session = await call('session/new', { cwd, mcpServers: [] })
+      const thoughtOption = session.configOptions?.find((option) => option.id === 'thought_level')
+      if (thoughtOption) {
+        const values = thoughtOption.options?.map((option) => option.value) ?? []
+        const value = thinking ? (values.includes('high') ? 'high' : 'enabled') : 'disabled'
+        if (values.includes(value)) await call('session/set_config_option', { sessionId: session.sessionId, configId: thoughtOption.id, value })
+      }
       const prompt = typeof task === 'string' ? [{ type: 'text', text: task }] : task
       if (prompt.some((part) => part.type === 'image') && !init.agentCapabilities?.promptCapabilities?.image) {
         throw new Error('当前 CodeBuddy ACP 接口不支持图片。')
       }
+      promptSent = true
+      resetIdleTimeout()
       const result = await call('session/prompt', { sessionId: session.sessionId, prompt })
       if (result.stopReason !== 'end_turn' || !answer.trim()) throw new Error('CodeBuddy ended without a complete reply.')
       finish()
@@ -177,8 +234,17 @@ function askCodeBuddyDetailed(task, signal, nodeExecutable, onDelta) {
   })
 }
 
+async function askCodeBuddyDetailed(task, signal, nodeExecutable, onDelta, thinking) {
+  signal?.throwIfAborted()
+  try { return await askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking) }
+  catch (error) {
+    if (!error.retryable || signal?.aborted) throw error
+    return askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking)
+  }
+}
+
 async function askCodeBuddy(...args) {
   return (await askCodeBuddyDetailed(...args)).text
 }
 
-module.exports = { askCodeBuddy, askCodeBuddyDetailed, findCodeBuddy, installCodeBuddy }
+module.exports = { askCodeBuddy, askCodeBuddyDetailed, findCodeBuddy, installCodeBuddy, ensureCodeBuddy, installationState }
