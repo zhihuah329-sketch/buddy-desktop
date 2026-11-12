@@ -53,6 +53,7 @@
         <dt>客户端确认的强度</dt><dd>{effortLabels[route.lastRequest.effectiveEffort] ?? route.lastRequest.effectiveEffort}</dd>
         <dt>模型支持的档位</dt><dd>{route.lastRequest.supportedEfforts.map(value => effortLabels[value] ?? value).join('、') || '未确认'}</dd>
       </dl>
+      {#if route.lastRequest.failure}<p role="status">最近请求失败：{route.lastRequest.failure.message} <code>{route.lastRequest.failure.code}</code></p>{/if}
     {/if}
   </section>
   <section>
@@ -62,7 +63,7 @@
       <dt>Base URL</dt><dd><code>{appState?.endpoint ?? 'http://127.0.0.1:5178/v1'}</code></dd>
       <dt>模型 ID</dt><dd><code>deepseek-v4.1-flash-codebuddy-cn</code></dd>
       <dt>输入</dt><dd>文本、图片</dd>
-      <dt>桥接输入限制</dt><dd>对话和工具定义合计 128000 字符</dd>
+      <dt>桥接输入限制</dt><dd>对话和工具定义合计 400 万字符；模型 token 限制由上游校验</dd>
     </dl>
     <p>需要访问密钥时，在「接入与密钥」创建包含 WorkBuddy 权限的密钥。</p>
     <p>支持 DSH 提供的文件、搜索和命令等工具。发送文件路径后，模型可调用相应工具解析文档；执行与权限确认由 DSH 负责。</p>

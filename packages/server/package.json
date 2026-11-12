@@ -12,6 +12,7 @@
     "buddy-desktop": "./src/cli.js"
   },
   "dependencies": {
-    "@buddy-desktop/core": "workspace:*"
+    "@buddy-desktop/core": "workspace:*",
+    "ajv": "^8.20.0"
   }
 }

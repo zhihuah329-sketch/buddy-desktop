@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
-import { startServer } from '../packages/server/src/index.js'
+const { startServer } = await import(process.env.BUDDY_TEST_SERVER_MODULE ?? '../packages/server/src/index.js')
 
 const home = mkdtempSync(join(tmpdir(), 'buddy-onboarding-'))
 const prefix = join(home, 'Roaming', 'npm')
@@ -110,7 +110,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       return send({ id, error: { code: -32602, message: 'Missing instructions or tool schema' } })
     }
     const chunks = text.includes('DOCX_RESULT_7424') ? ['Word contents: DOCX_RESULT_7424. Table: TABLE_RESULT_9248.']
-      : ['Preparing document parser. ', 'BUDDY_DSH_', 'TOOL ' + JSON.stringify({name:'functions.pwsh',arguments:{description:'Read Word XML',command:process.env.BUDDY_DOC_TEST_COMMAND,timeoutMs:1000}}) + ' ']
+      : ['Preparing document parser.\\n', 'BUDDY_DSH_', 'TOOL ' + JSON.stringify({name:'functions.pwsh',arguments:{description:'Read Word XML',command:process.env.BUDDY_DOC_TEST_COMMAND,timeoutMs:1000}}) + ' ']
     for (const text of chunks) send({ method: 'session/update', params: { update: {
       sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }
     } } })
@@ -223,7 +223,7 @@ try {
     const response = await prompt('TOOL_JSON_FIXTURE_'+fixture,{tools:questionTools,stream:false})
     assert.equal(response.status,502)
     const body = await response.json()
-    assert.match(body.error.message,/工具请求格式无效/)
+    assert.match(body.error.upstream_code,/^CODEBUDDY_TOOL_/)
     assert.equal(body.choices,undefined)
   }
   const streamError = await prompt('TOOL_JSON_FIXTURE_INNER',{tools:questionTools}).then(res=>res.text())

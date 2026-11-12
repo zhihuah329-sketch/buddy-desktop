@@ -1047,10 +1047,14 @@ async function handleCodeBuddyChat(payload, res, options) {
   }
   const choice = payload.tool_choice
   const selectedTool = typeof choice === 'object' ? choice?.function?.name : undefined
+  if (choice && !['auto', 'none', 'required'].includes(choice) && !(choice.type === 'function' && typeof selectedTool === 'string')) {
+    return apiError(res, 400, 'tool_choice 必须是 auto、none、required 或指定的 function。', 'invalid_tool_choice')
+  }
   const tools = choice === 'none' || !Array.isArray(payload.tools) ? [] : payload.tools
     .filter((tool) => tool?.type === 'function' && typeof tool.function?.name === 'string' &&
       /^[\w.-]{1,128}$/.test(tool.function.name) && (!selectedTool || tool.function.name === selectedTool))
     .map((tool) => ({ name: tool.function.name, description: typeof tool.function.description === 'string' ? tool.function.description : undefined, parameters: tool.function.parameters }))
+  if ((choice === 'required' || selectedTool) && !tools.length) return apiError(res, 400, '要求调用的工具未在 tools 中声明。', 'invalid_tool_choice')
   const toolCallIds = new Set()
   const messages = []
   for (const message of payload.messages) {
@@ -1074,8 +1078,8 @@ async function handleCodeBuddyChat(payload, res, options) {
       }
     }
     if (message.role === 'assistant') {
-      for (const call of message.tool_calls ?? []) {
-        if (toolCallIds.has(call.id)) content.push({ type: 'tool-call', id: call.id, name: call.function.name, arguments: call.function.arguments })
+      for (const call of Array.isArray(message.tool_calls) ? message.tool_calls : []) {
+        if (typeof call?.function?.name === 'string' && toolCallIds.has(call.id)) content.push({ type: 'tool-call', id: call.id, name: call.function.name, arguments: call.function.arguments })
       }
     }
     messages.push({ role: message.role, content, ...(message.role === 'tool' ? { toolCallId: message.tool_call_id } : {}) })
@@ -1103,7 +1107,7 @@ async function handleCodeBuddyChat(payload, res, options) {
     heartbeat.unref()
     res.once('close', () => clearInterval(heartbeat))
   }
-  for await (const event of streamCodeBuddy({ messages, tools, responseFormat: payload.response_format, reasoningEffort, signal: controller.signal }, attachments)) {
+  for await (const event of streamCodeBuddy({ messages, tools, responseFormat: payload.response_format, reasoningEffort, toolRequired: choice === 'required' || Boolean(selectedTool), parallelToolCalls: payload.parallel_tool_calls, signal: controller.signal }, attachments)) {
     if (event.type === 'text-delta' || event.type === 'reasoning-delta') {
       if (payload.stream === true) {
         if (controller.signal.aborted) return
@@ -1134,8 +1138,8 @@ async function handleCodeBuddyChat(payload, res, options) {
   if (controller.signal.aborted) return
   if (finish?.kind !== 'stop') {
     const message = finish?.failure?.message ?? 'CodeBuddy 没有返回完整回复。'
-    if (!res.headersSent) return apiError(res, 502, message, 'WORKBUDDY_CODEBUDDY_ERROR')
-    await writeEvent(res, { error: { message, type: 'upstream_error', code: 'WORKBUDDY_CODEBUDDY_ERROR' } }, controller.signal)
+    if (!res.headersSent) return apiError(res, 502, message, 'WORKBUDDY_CODEBUDDY_ERROR', { upstreamCode: finish?.failure?.code })
+    await writeEvent(res, { error: { message, type: 'upstream_error', code: 'WORKBUDDY_CODEBUDDY_ERROR', upstream_code: finish?.failure?.code } }, controller.signal)
     return res.end()
   }
   const finishReason = toolCalls.length ? 'tool_calls' : 'stop'

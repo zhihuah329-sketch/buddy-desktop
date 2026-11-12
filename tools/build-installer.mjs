@@ -31,6 +31,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { copyRuntimeDependencies } from './copy-runtime-deps.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 // The output goes to a drive with room for it. A Windows installer stages a full
@@ -184,6 +185,7 @@ if (siblingSource === undefined) {
   throw new Error(`缺少 ${SIBLING}：先在仓库根目录运行 pnpm install。`)
 }
 copyTree(siblingSource, join(appDir, 'node_modules', SIBLING))
+copyRuntimeDependencies(join(ROOT, 'packages', 'server', 'package.json'), join(appDir, 'node_modules'))
 
 // The server resolves the page relative to its own file, so the built page is also
 // placed where that lookup expects it.

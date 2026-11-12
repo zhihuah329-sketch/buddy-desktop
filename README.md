@@ -51,6 +51,28 @@ desktop shortcuts, and registers an uninstaller. No Node installation is require
 
 ## Use it for model calls
 
+For a Chinese CodeBuddy account, use model `deepseek-v4.1-flash-codebuddy-cn`
+with the same Base URL below. Buddy Desktop detects the official CodeBuddy CLI
+and installs it globally when missing (Node.js and network access are required).
+Run `codebuddy`, choose **Log in via Chinese Site**, then use the route test in
+Buddy Desktop. This route uses only DeepSeek V4.1 Flash and passes DSH's tools
+back to DSH for execution and permission checks. Reasoning defaults to `high`;
+`low` and `max` can also be selected. The route page shows the confirmed model,
+reasoning level, and any recent bridge error.
+
+The bridge preserves complete tool results and parameter descriptions. It accepts
+standard, flattened, string-encoded and DSML tool envelopes, validates arguments
+against the caller's JSON Schema, and validates an entire batch before forwarding
+any calls. Incomplete argument values are rejected. Only a missing outer envelope
+brace can be completed. JSON response schemas are also checked before returning.
+
+Run `npm run verify:codebuddy` on Windows for the account-free regression suite:
+fragmented tool/answer/reasoning streams, tool schemas, batches, long files,
+structured results, simulated login, installation and SSE framing. GitHub Actions
+runs it on relevant changes. For a local history audit, run
+`node tools/audit-codebuddy-sessions.mjs "<DSH sessions directory>" "<CodeBuddy traces directory>"`.
+The audit reports aggregate counts and never executes or uploads a conversation.
+
 | Setting | Value |
 | --- | --- |
 | Base URL | `http://127.0.0.1:5178/v1` |

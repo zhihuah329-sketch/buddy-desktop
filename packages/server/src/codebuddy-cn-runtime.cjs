@@ -15,6 +15,7 @@ let lastRequest
 
 function installationState() { return { ...installState } }
 function requestState() { return lastRequest ? { ...lastRequest, supportedEfforts: [...lastRequest.supportedEfforts] } : undefined }
+function recordFailure(failure) { if (lastRequest) lastRequest.failure = { ...failure, at: Date.now() } }
 
 function selectThoughtLevel(option, effort) {
   const requested = effort === false || effort === 'none' || effort === 'off' ? 'disabled'
@@ -286,4 +287,4 @@ async function askCodeBuddy(...args) {
   return (await askCodeBuddyDetailed(...args)).text
 }
 
-module.exports = { askCodeBuddy, askCodeBuddyDetailed, findCodeBuddy, installCodeBuddy, ensureCodeBuddy, installationState, requestState }
+module.exports = { askCodeBuddy, askCodeBuddyDetailed, findCodeBuddy, installCodeBuddy, ensureCodeBuddy, installationState, requestState, recordFailure }
