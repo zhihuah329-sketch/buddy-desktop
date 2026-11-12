@@ -73,7 +73,7 @@ function codeBuddyState() {
   const installation = codeBuddy.installationState()
   try {
     const runtime = codeBuddy.findCodeBuddy()
-    return { installed: true, managed: runtime.managed === true, version: runtime.version, installation, model: CODEBUDDY_CN_MODEL }
+    return { installed: true, managed: runtime.managed === true, version: runtime.version, installation, lastRequest: codeBuddy.requestState(), model: CODEBUDDY_CN_MODEL }
   } catch (error) {
     return { installed: false, installation, model: CODEBUDDY_CN_MODEL, error: installation.error ?? error.message }
   }
@@ -1040,6 +1040,11 @@ async function handleCodeBuddyChat(payload, res, options) {
   const runtime = codeBuddyState()
   if (runtime.installation.phase === 'installing') return apiError(res, 503, 'CodeBuddy 正在自动安装，请等待安装完成。', 'WORKBUDDY_CODEBUDDY_INSTALLING', { headers: { 'retry-after': '10' } })
   if (!runtime.installed) return apiError(res, 503, runtime.error, 'WORKBUDDY_CODEBUDDY_UNAVAILABLE')
+  const disabled = payload.thinking === false || payload.thinking?.type === 'disabled' || payload.reasoning?.enabled === false
+  const reasoningEffort = disabled ? 'disabled' : payload.reasoning_effort ?? payload.reasoning?.effort ?? payload.thinking?.effort ?? 'high'
+  if (!['minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'enabled', 'disabled', 'none', 'off'].includes(reasoningEffort)) {
+    return apiError(res, 400, '不支持的推理强度。可选 minimal、low、medium、high、xhigh、max 或 none。', 'invalid_reasoning_effort')
+  }
   const choice = payload.tool_choice
   const selectedTool = typeof choice === 'object' ? choice?.function?.name : undefined
   const tools = choice === 'none' || !Array.isArray(payload.tools) ? [] : payload.tools
@@ -1098,7 +1103,7 @@ async function handleCodeBuddyChat(payload, res, options) {
     heartbeat.unref()
     res.once('close', () => clearInterval(heartbeat))
   }
-  for await (const event of streamCodeBuddy({ messages, tools, responseFormat: payload.response_format, thinking: payload.thinking?.type !== 'disabled' && payload.reasoning?.enabled !== false && payload.reasoning_effort !== 'none', signal: controller.signal }, attachments)) {
+  for await (const event of streamCodeBuddy({ messages, tools, responseFormat: payload.response_format, reasoningEffort, signal: controller.signal }, attachments)) {
     if (event.type === 'text-delta' || event.type === 'reasoning-delta') {
       if (payload.stream === true) {
         if (controller.signal.aborted) return

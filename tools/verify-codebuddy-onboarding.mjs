@@ -57,6 +57,10 @@ const { existsSync } = require('node:fs')
 const { join } = require('node:path')
 const send = (obj) => console.log(JSON.stringify({ jsonrpc: '2.0', ...obj }))
 let thoughtLevel
+let selectedModel = 'other-model'
+const configOptions = () => [{id:'model',currentValue:selectedModel,options:[{value:'deepseek-v4.1-flash'}]}, {
+  id:'thought_level',currentValue:thoughtLevel,options:['low','high','max','enabled','disabled'].map(value=>({value}))
+}]
 createInterface({ input: process.stdin }).on('line', (line) => {
   const { id, method, params } = JSON.parse(line)
   if (method === 'initialize') return send({ id, result: { protocolVersion: 1 } })
@@ -64,15 +68,35 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     if (!existsSync(join(process.env.USERPROFILE, 'cn-test-login'))) {
       return send({ id, error: { code: -32000, message: 'Authentication required' } })
     }
-    return send({ id, result: { sessionId: 'test-session', configOptions: [{
-      id: 'thought_level', options: [{ value: 'high' }, { value: 'enabled' }, { value: 'disabled' }]
-    }] } })
+    return send({ id, result: { sessionId: 'test-session', configOptions: configOptions() } })
   }
   if (method === 'session/set_config_option') {
-    thoughtLevel = params.value
-    return send({ id, result: {} })
+    if (params.configId === 'model') selectedModel = params.value
+    else thoughtLevel = params.value
+    return send({ id, result: { configOptions: configOptions() } })
   }
   if (!thoughtLevel) return send({ id, error: { code: -32602, message: 'Thinking config was not sent' } })
+  if (params.prompt[0].text.includes('TOOL_JSON_FIXTURE_')) {
+    const task = params.prompt[0].text
+    const complete = JSON.stringify({name:'ask_user_question',arguments:{questions:[{id:'style',question:'Choose a style',options:[{label:'Keep {current}',description:'Preserve the SVG'}, {label:'Change',description:'Use another color'}]}]}})
+    const text = task.includes('TOOL_JSON_FIXTURE_ENVELOPE') ? complete.slice(0,-1)
+      : task.includes('TOOL_JSON_FIXTURE_INNER') ? complete.slice(0,-2)
+      : task.includes('TOOL_JSON_FIXTURE_STRING') ? complete.slice(0,complete.indexOf('another color')+7)
+      : complete.replace('ask_user_question','undeclared_tool')
+    for (const chunk of ['\\n', 'BUDDY_DSH_', 'TOOL ', text]) send({method:'session/update',params:{update:{sessionUpdate:'agent_message_chunk',content:{type:'text',text:chunk}}}})
+    return send({id,result:{stopReason:'end_turn'}})
+  }
+  if (params.prompt[0].text.includes('REPORT_EFFORT')) {
+    send({ method: 'session/update', params: { update: {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: thoughtLevel }
+    } } })
+    return send({ id, result: { stopReason: 'end_turn' } })
+  }
+  if (params.prompt[0].text.includes('CHECK_LARGE_TOOL_RESULT')) {
+    const text = params.prompt[0].text.includes('LARGE_TOOL_TAIL_7425') ? 'Long result preserved.' : 'Long result lost.'
+    send({ method: 'session/update', params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } } } })
+    return send({ id, result: { stopReason: 'end_turn' } })
+  }
   if (params.prompt[0].text.includes('REVIEW_JSON_INPUT')) {
     const text = String.fromCharCode(96, 96, 96) + 'json' + String.fromCharCode(10) + '{"risk":"low","note":"fixture only"}' + String.fromCharCode(10) + String.fromCharCode(96, 96, 96)
     send({ method: 'session/update', params: { update: {
@@ -168,6 +192,43 @@ try {
   assert.match(body, /data: \[DONE\]/)
   const noThinking = await prompt('Say OK.', { thinking: { type: 'disabled' } }).then((res) => res.text())
   assert.doesNotMatch(noThinking, /reasoning_content/)
+  for (const [options, expected] of [
+    [{reasoning_effort:'low'},'low'], [{reasoning_effort:'medium'},'high'],
+    [{reasoning_effort:'max'},'max'], [{reasoning:{effort:'xhigh'}},'max'],
+    [{reasoning_effort:'none'},'disabled'], [{reasoning:{enabled:false}},'disabled']
+  ]) {
+    const answer = await prompt('REPORT_EFFORT', {...options,stream:false}).then((res) => res.json())
+    assert.equal(answer.choices[0].message.content, expected)
+    const state = await readState()
+    assert.equal(state.codeBuddy.lastRequest.effectiveEffort, expected)
+    assert.equal(state.codeBuddy.lastRequest.model, 'deepseek-v4.1-flash')
+  }
+  assert.equal((await prompt('REPORT_EFFORT',{reasoning_effort:'unsupported'})).status,400)
+  const questionTools = [{type:'function',function:{name:'ask_user_question',parameters:{type:'object',properties:{questions:{type:'array',items:{type:'object'}}},required:['questions']}}}]
+  for (const stream of [false,true]) {
+    const response = await prompt('TOOL_JSON_FIXTURE_ENVELOPE', {tools:questionTools,stream})
+    if (stream) {
+      const text = await response.text()
+      assert.match(text,/"finish_reason":"tool_calls"/)
+      assert.doesNotMatch(text,/"error"|未执行|BUDDY_DSH/)
+    } else {
+      const body = await response.json()
+      const call = body.choices[0].message.tool_calls[0]
+      assert.equal(body.choices[0].finish_reason,'tool_calls')
+      assert.equal(call.function.name,'ask_user_question')
+      assert.equal(JSON.parse(call.function.arguments).questions[0].options[0].label,'Keep {current}')
+    }
+  }
+  for (const fixture of ['INNER','STRING','UNKNOWN']) {
+    const response = await prompt('TOOL_JSON_FIXTURE_'+fixture,{tools:questionTools,stream:false})
+    assert.equal(response.status,502)
+    const body = await response.json()
+    assert.match(body.error.message,/工具请求格式无效/)
+    assert.equal(body.choices,undefined)
+  }
+  const streamError = await prompt('TOOL_JSON_FIXTURE_INNER',{tools:questionTools}).then(res=>res.text())
+  assert.match(streamError,/"error"/)
+  assert.doesNotMatch(streamError,/"finish_reason":"stop"|"finish_reason":"tool_calls"/)
   const tool = await prompt('Emit a tool marker.')
   assert.equal(tool.status, 200)
   const toolNotice = await tool.text()
@@ -187,6 +248,12 @@ try {
     { role: 'tool', tool_call_id: call.id, content: 'fixture value: kiwi' }
   ] }).then((res) => res.text())
   assert.match(withResult, /The file says kiwi/)
+  const longResult = await prompt('', { tools, stream: false, messages: [
+    {role:'user',content:'CHECK_LARGE_TOOL_RESULT'},
+    {role:'assistant',content:null,tool_calls:[call]},
+    {role:'tool',tool_call_id:call.id,content:'x'.repeat(25000)+'LARGE_TOOL_TAIL_7425'}
+  ] }).then((res) => res.json())
+  assert.equal(longResult.choices[0].message.content,'Long result preserved.')
   const documentTools = [...tools, { type: 'function', function: {
     name: 'pwsh', parameters: { type: 'object', properties: {
       description: { type: 'string' }, command: { type: 'string' }, timeoutMs: { type: 'number' }
@@ -226,10 +293,16 @@ try {
     ['Read unsafe DSML fixture.', { tools }],
     ['Read DSML fixture.', { tools, tool_choice: 'none' }]
   ]) {
-    const blocked = await prompt(content, { ...options, stream: false }).then((res) => res.json())
-    assert.equal(blocked.choices[0].finish_reason, 'stop')
-    assert.match(blocked.choices[0].message.content, /工具请求未执行/)
-    assert.doesNotMatch(blocked.choices[0].message.content, /DSML/)
+    const response = await prompt(content, { ...options, stream: false })
+    const blocked = await response.json()
+    if (options.tool_choice === 'none') {
+      assert.equal(blocked.choices[0].finish_reason, 'stop')
+      assert.match(blocked.choices[0].message.content, /工具请求未执行/)
+      assert.doesNotMatch(blocked.choices[0].message.content, /DSML/)
+    } else {
+      assert.equal(response.status,502)
+      assert.match(blocked.error.message,/工具未在 DSH 中声明/)
+    }
   }
   console.log('Clean profile: detected CLI, reported login requirement, and streamed after simulated CN login.')
 } finally {

@@ -7,11 +7,28 @@ const { createInterface } = require('node:readline')
 const packageBin = ['node_modules', '@tencent-ai', 'codebuddy-code', 'bin', 'codebuddy']
 const model = 'deepseek-v4.1-flash'
 const npmPackage = '@tencent-ai/codebuddy-code'
+const reasoningLevels = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 let installation
 let globalPrefix
 let installState = { phase: 'idle' }
+let lastRequest
 
 function installationState() { return { ...installState } }
+function requestState() { return lastRequest ? { ...lastRequest, supportedEfforts: [...lastRequest.supportedEfforts] } : undefined }
+
+function selectThoughtLevel(option, effort) {
+  const requested = effort === false || effort === 'none' || effort === 'off' ? 'disabled'
+    : effort === true || effort === undefined ? 'high' : effort
+  if (!['disabled', 'enabled', ...reasoningLevels].includes(requested)) throw new Error('无效的 CodeBuddy 推理强度。')
+  const supported = option?.options?.map((item) => item.value) ?? []
+  if (!option) return { requested, supported, effective: undefined }
+  if (supported.includes(requested)) return { requested, supported, effective: requested }
+  if (requested === 'disabled') throw new Error('当前模型不提供关闭推理的选项。')
+  const upper = reasoningLevels.slice(reasoningLevels.indexOf(requested)).find((level) => supported.includes(level))
+  const lower = reasoningLevels.slice(0, reasoningLevels.indexOf(requested) + 1).filter((level) => supported.includes(level))
+  const effective = upper ?? lower.at(-1) ?? (supported.includes('enabled') ? 'enabled' : undefined)
+  return { requested, supported, effective }
+}
 
 function firstFile(paths) {
   return paths.find((path) => {
@@ -129,6 +146,7 @@ function askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking = true
     let usage
     let finished = false
     let promptSent = false
+    let configuration
     const transportError = (message) => Object.assign(new Error(message), { retryable: !promptSent })
     const abort = () => finish(new Error('CodeBuddy 请求已取消。'))
     let idleTimeout
@@ -179,6 +197,8 @@ function askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking = true
       resetIdleTimeout()
       if (message.method === 'session/update') {
         const update = message.params?.update
+        const actualModel = update?._meta?.['codebuddy.ai/requestModelId']
+        if (configuration && typeof actualModel === 'string') configuration.actualModel = actualModel
         if (update?.content?.type === 'text' && update.content.text) {
           const text = update.content.text
           if (update.sessionUpdate === 'agent_message_chunk') {
@@ -215,12 +235,24 @@ function askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking = true
       })
       if (init.protocolVersion !== 1) throw new Error('CodeBuddy returned an unsupported ACP version.')
       const session = await call('session/new', { cwd, mcpServers: [] })
-      const thoughtOption = session.configOptions?.find((option) => option.id === 'thought_level')
-      if (thoughtOption) {
-        const values = thoughtOption.options?.map((option) => option.value) ?? []
-        const value = thinking ? (values.includes('high') ? 'high' : 'enabled') : 'disabled'
-        if (values.includes(value)) await call('session/set_config_option', { sessionId: session.sessionId, configId: thoughtOption.id, value })
+      let configOptions = session.configOptions ?? []
+      const modelOption = configOptions.find((option) => option.id === 'model')
+      let selectedModel = modelOption?.currentValue ?? session.models?.currentModelId
+      if (selectedModel !== model && modelOption?.options?.some((option) => option.value === model)) {
+        const changed = await call('session/set_config_option', { sessionId: session.sessionId, configId: modelOption.id, value: model })
+        configOptions = changed.configOptions ?? configOptions
+        selectedModel = configOptions.find((option) => option.id === 'model')?.currentValue ?? selectedModel
       }
+      if (selectedModel && selectedModel !== model) throw new Error(`CodeBuddy 当前选择的是 ${selectedModel}，未能切换到 ${model}。`)
+      const thoughtOption = configOptions.find((option) => option.id === 'thought_level')
+      const level = selectThoughtLevel(thoughtOption, thinking)
+      if (level.effective) {
+        const changed = await call('session/set_config_option', { sessionId: session.sessionId, configId: thoughtOption.id, value: level.effective })
+        const confirmed = changed.configOptions?.find((option) => option.id === thoughtOption.id)?.currentValue
+        if (confirmed && confirmed !== level.effective) throw new Error('CodeBuddy 未接受请求的推理强度。')
+      }
+      configuration = { model: selectedModel ?? model, requestedEffort: level.requested, effectiveEffort: level.effective ?? 'unknown', supportedEfforts: level.supported, startedAt: Date.now() }
+      lastRequest = configuration
       const prompt = typeof task === 'string' ? [{ type: 'text', text: task }] : task
       if (prompt.some((part) => part.type === 'image') && !init.agentCapabilities?.promptCapabilities?.image) {
         throw new Error('当前 CodeBuddy ACP 接口不支持图片。')
@@ -254,4 +286,4 @@ async function askCodeBuddy(...args) {
   return (await askCodeBuddyDetailed(...args)).text
 }
 
-module.exports = { askCodeBuddy, askCodeBuddyDetailed, findCodeBuddy, installCodeBuddy, ensureCodeBuddy, installationState }
+module.exports = { askCodeBuddy, askCodeBuddyDetailed, findCodeBuddy, installCodeBuddy, ensureCodeBuddy, installationState, requestState }

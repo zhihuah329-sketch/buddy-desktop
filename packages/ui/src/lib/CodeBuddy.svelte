@@ -2,6 +2,7 @@
   let { appState, onTest, onInstall } = $props()
   const route = $derived(appState?.codeBuddy)
   const installingNow = $derived(installing || route?.installation?.phase === 'installing')
+  const effortLabels = { minimal: '极低', low: '低', medium: '中', high: '高', xhigh: '很高', max: '最高', enabled: '模型默认', disabled: '关闭', unknown: '未确认' }
   let testing = $state(false)
   let result = $state(null)
   let installing = $state(false)
@@ -45,6 +46,14 @@
     {#if installResult}<p aria-live="polite" class:good={installResult.ok}>{installResult.ok ? '安装完成。请按上面的步骤登录。' : installResult.error}</p>{/if}
     <button disabled={testing || installingNow || !route?.installed} onclick={test}>{testing ? '正在测试…' : '测试线路'}</button>
     {#if result}<p aria-live="polite" class:good={result.ok}>{result.ok ? '连接成功，模型已返回回复。' : result.error}</p>{/if}
+    {#if route?.lastRequest}
+      <dl>
+        <dt>最近请求的模型</dt><dd><code>{route.lastRequest.actualModel ?? route.lastRequest.model}</code></dd>
+        <dt>请求的推理强度</dt><dd>{effortLabels[route.lastRequest.requestedEffort] ?? route.lastRequest.requestedEffort}</dd>
+        <dt>客户端确认的强度</dt><dd>{effortLabels[route.lastRequest.effectiveEffort] ?? route.lastRequest.effectiveEffort}</dd>
+        <dt>模型支持的档位</dt><dd>{route.lastRequest.supportedEfforts.map(value => effortLabels[value] ?? value).join('、') || '未确认'}</dd>
+      </dl>
+    {/if}
   </section>
   <section>
     <h2>在 DSH 添加自定义模型</h2>
@@ -52,10 +61,12 @@
       <dt>协议</dt><dd>OpenAI Chat Completions</dd>
       <dt>Base URL</dt><dd><code>{appState?.endpoint ?? 'http://127.0.0.1:5178/v1'}</code></dd>
       <dt>模型 ID</dt><dd><code>deepseek-v4.1-flash-codebuddy-cn</code></dd>
-      <dt>输入与上下文</dt><dd>文本、图片 · 8192 tokens</dd>
+      <dt>输入</dt><dd>文本、图片</dd>
+      <dt>桥接输入限制</dt><dd>对话和工具定义合计 128000 字符</dd>
     </dl>
     <p>需要访问密钥时，在「接入与密钥」创建包含 WorkBuddy 权限的密钥。</p>
     <p>支持 DSH 提供的文件、搜索和命令等工具。发送文件路径后，模型可调用相应工具解析文档；执行与权限确认由 DSH 负责。</p>
+    <p>默认使用高推理强度；也可在 DSH 选择档位。上方显示最近请求与官方 CLI 确认的实际档位。</p>
   </section>
 </div>
 

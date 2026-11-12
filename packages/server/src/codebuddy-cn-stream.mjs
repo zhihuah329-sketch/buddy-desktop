@@ -24,8 +24,8 @@ function toolRequest(name, args, tools) {
   return { name: tool.name, arguments: JSON.stringify(args) }
 }
 
-function parseToolJson(text) {
-  let depth = 0
+function parseToolJson(text, completeEnvelope = false) {
+  const closing = []
   let quoted = false
   let escaped = false
   const start = text.indexOf('{')
@@ -36,9 +36,17 @@ function parseToolJson(text) {
     if (quoted && char === '\\') { escaped = true; continue }
     if (char === '"') { quoted = !quoted; continue }
     if (quoted) continue
-    if (char === '{' || char === '[') depth += 1
-    if (char === '}' || char === ']') depth -= 1
-    if (depth === 0) return JSON.parse(text.slice(start, index + 1))
+    if (char === '{') closing.push('}')
+    if (char === '[') closing.push(']')
+    if (char === '}' || char === ']') {
+      if (closing.pop() !== char) throw new Error('Mismatched tool arguments')
+      if (closing.length === 0) return JSON.parse(text.slice(start, index + 1))
+    }
+  }
+  // Some CLI responses omit only the envelope's final brace. Arguments must
+  // already be complete: never repair a command, file content, or inner object.
+  if (completeEnvelope && !quoted && !escaped && closing.length === 1 && closing[0] === '}') {
+    return JSON.parse(text.slice(start).trimEnd() + '}')
   }
   throw new Error('Incomplete tool arguments')
 }
@@ -110,8 +118,7 @@ async function taskFrom({ messages, purpose, system, signal, tools, responseForm
       images.push({ type: 'image', mimeType: ref.mediaType, data: Buffer.from(data).toString('base64') })
       parts.push(`[图片 ${images.length}]`)
     }
-    let text = parts.join('\n').trim()
-    if (message.role === 'tool' && text.length > 24000) text = text.slice(0, 24000) + '\n[Tool result truncated. Request a smaller range if needed.]'
+    const text = parts.join('\n').trim()
     if (text) conversation.push({ role: plugin === 'compact' ? 'checkpoint' : message.role, ...(message.toolCallId ? { toolCallId: message.toolCallId } : {}), text })
   }
   if (!conversation.length) throw new Error('没有可发送给 CodeBuddy 的文本。')
@@ -142,7 +149,7 @@ export async function* streamCodeBuddy(options, attachments) {
     let usage
     void bridge.askCodeBuddyDetailed(task, signal, undefined, (type, text) => {
       deltas.push({ type, text })
-    }, options.thinking).then((result) => {
+    }, options.reasoningEffort ?? options.thinking).then((result) => {
       usage = result.usage
       deltas.push(null)
     }, (error) => deltas.destroy(error))
@@ -222,14 +229,13 @@ export async function* streamCodeBuddy(options, attachments) {
             request = toolRequest('read', JSON.parse(args), tools)
           }
           else {
-            const parsed = parseToolJson(candidate.slice(TOOL_MARKER.length))
+            const parsed = parseToolJson(candidate.slice(TOOL_MARKER.length), true)
             request = toolRequest(parsed.name, parsed.arguments, tools)
           }
         } else if (dsmlRequest.length <= 65536) request = dsmlToolRequest(dsmlRequest, tools)
       } catch {}
-      if (!request) toolNotice = tools.length
-        ? '\n\n这次工具请求未执行：返回的工具名或参数格式与 DSH 提供的定义不匹配。请重试。'
-        : '\n\n这次工具请求未执行。请在 DSH 中启用所需工具后重试，或直接提供文件内容。'
+      if (!request && tools.length) throw new Error('CodeBuddy 返回的工具请求格式无效或工具未在 DSH 中声明，本次工具未执行。')
+      if (!request) toolNotice = '\n\n这次工具请求未执行。请在 DSH 中启用所需工具后重试，或直接提供文件内容。'
     }
     const tail = structured ? JSON.stringify(parseToolJson(structuredText)) : pendingText + (isToolRequest ? '' : readRequest) + toolNotice
     if (tail) {
