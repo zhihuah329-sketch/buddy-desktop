@@ -1041,23 +1041,24 @@ async function handleCodeBuddyChat(payload, res, options) {
   if (runtime.installation.phase === 'installing') return apiError(res, 503, 'CodeBuddy 正在自动安装，请等待安装完成。', 'WORKBUDDY_CODEBUDDY_INSTALLING', { headers: { 'retry-after': '10' } })
   if (!runtime.installed) return apiError(res, 503, runtime.error, 'WORKBUDDY_CODEBUDDY_UNAVAILABLE')
   const choice = payload.tool_choice
-  const readTool = choice !== 'none' && (typeof choice !== 'object' || choice?.function?.name === 'read') &&
-    Array.isArray(payload.tools) && payload.tools.some((tool) =>
-    tool?.type === 'function' && tool.function?.name === 'read' && tool.function.parameters?.properties?.file_path?.type === 'string')
-  const readCallIds = new Set()
+  const selectedTool = typeof choice === 'object' ? choice?.function?.name : undefined
+  const tools = choice === 'none' || !Array.isArray(payload.tools) ? [] : payload.tools
+    .filter((tool) => tool?.type === 'function' && typeof tool.function?.name === 'string' &&
+      /^[\w.-]{1,128}$/.test(tool.function.name) && (!selectedTool || tool.function.name === selectedTool))
+    .map((tool) => ({ name: tool.function.name, description: typeof tool.function.description === 'string' ? tool.function.description : undefined, parameters: tool.function.parameters }))
+  const toolCallIds = new Set()
   const messages = []
   for (const message of payload.messages) {
-    if (readTool && message?.role === 'assistant' && Array.isArray(message.tool_calls)) {
+    if (message?.role === 'assistant' && Array.isArray(message.tool_calls)) {
       for (const call of message.tool_calls) {
-        if (call?.function?.name === 'read' && typeof call.id === 'string') readCallIds.add(call.id)
+        if (typeof call?.function?.name === 'string' && typeof call.id === 'string') toolCallIds.add(call.id)
       }
     }
-    if (!['user', 'assistant'].includes(message?.role) &&
-        !(message?.role === 'tool' && readCallIds.has(message.tool_call_id))) continue
+    if (!['user', 'assistant', 'system', 'developer'].includes(message?.role) &&
+        !(message?.role === 'tool' && toolCallIds.has(message.tool_call_id))) continue
     const parts = typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content
-    if (!Array.isArray(parts)) continue
     const content = []
-    for (const part of parts) {
+    for (const part of Array.isArray(parts) ? parts : []) {
       if (part?.type === 'text' && typeof part.text === 'string') content.push(part)
       else if (part?.type === 'image_url') {
         const url = part.image_url?.url
@@ -1067,7 +1068,12 @@ async function handleCodeBuddyChat(payload, res, options) {
         content.push({ type: 'image', attachment: { data, bytes: data.length, mediaType: match[1] } })
       }
     }
-    messages.push({ role: message.role, content })
+    if (message.role === 'assistant') {
+      for (const call of message.tool_calls ?? []) {
+        if (toolCallIds.has(call.id)) content.push({ type: 'tool-call', id: call.id, name: call.function.name, arguments: call.function.arguments })
+      }
+    }
+    messages.push({ role: message.role, content, ...(message.role === 'tool' ? { toolCallId: message.tool_call_id } : {}) })
   }
   const controller = new AbortController()
   res.once('close', () => controller.abort())
@@ -1076,7 +1082,7 @@ async function handleCodeBuddyChat(payload, res, options) {
   let reasoning = ''
   let usage
   let finish
-  let toolCall
+  const toolCalls = []
   const base = { id: `chatcmpl-codebuddy-${Date.now().toString(36)}`, created: Math.floor(Date.now() / 1000), model: CODEBUDDY_CN_MODEL }
   const frame = { ...base, object: 'chat.completion.chunk' }
   async function startStream() {
@@ -1092,7 +1098,7 @@ async function handleCodeBuddyChat(payload, res, options) {
     heartbeat.unref()
     res.once('close', () => clearInterval(heartbeat))
   }
-  for await (const event of streamCodeBuddy({ messages, readTool, thinking: payload.thinking?.type !== 'disabled' && payload.reasoning?.enabled !== false && payload.reasoning_effort !== 'none', signal: controller.signal }, attachments)) {
+  for await (const event of streamCodeBuddy({ messages, tools, responseFormat: payload.response_format, thinking: payload.thinking?.type !== 'disabled' && payload.reasoning?.enabled !== false && payload.reasoning_effort !== 'none', signal: controller.signal }, attachments)) {
     if (event.type === 'text-delta' || event.type === 'reasoning-delta') {
       if (payload.stream === true) {
         if (controller.signal.aborted) return
@@ -1102,11 +1108,13 @@ async function handleCodeBuddyChat(payload, res, options) {
       } else if (event.type === 'text-delta') text += event.text
       else reasoning += event.text
     }
-    if (event.type === 'read-tool-call') {
-      toolCall = { id: `call_read_${base.id.slice(-8)}`, type: 'function', function: { name: 'read', arguments: event.arguments } }
+    if (event.type === 'tool-call') {
+      const index = toolCalls.length
+      const toolCall = { id: `call_dsh_${base.id.slice(-8)}_${index}`, type: 'function', function: { name: event.name, arguments: event.arguments } }
+      toolCalls.push(toolCall)
       if (payload.stream === true) {
         await startStream()
-        await writeEvent(res, { ...frame, choices: [{ index: 0, delta: { tool_calls: [{ index: 0, ...toolCall }] }, finish_reason: null }] }, controller.signal)
+        await writeEvent(res, { ...frame, choices: [{ index: 0, delta: { tool_calls: [{ index, ...toolCall }] }, finish_reason: null }] }, controller.signal)
       }
     }
     if (event.type === 'usage') {
@@ -1125,7 +1133,7 @@ async function handleCodeBuddyChat(payload, res, options) {
     await writeEvent(res, { error: { message, type: 'upstream_error', code: 'WORKBUDDY_CODEBUDDY_ERROR' } }, controller.signal)
     return res.end()
   }
-  const finishReason = toolCall ? 'tool_calls' : 'stop'
+  const finishReason = toolCalls.length ? 'tool_calls' : 'stop'
   if (payload.stream === true) {
     await startStream()
     await writeEvent(res, { ...frame, choices: [{ index: 0, delta: {}, finish_reason: finishReason }] }, controller.signal)
@@ -1135,7 +1143,7 @@ async function handleCodeBuddyChat(payload, res, options) {
   }
   res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
   res.end(JSON.stringify({ ...base, object: 'chat.completion', ...(usage ? { usage } : {}), choices: [{ index: 0, message: {
-    role: 'assistant', content: toolCall ? null : text, ...(toolCall ? { tool_calls: [toolCall] } : {}), ...(reasoning ? { reasoning_content: reasoning } : {})
+    role: 'assistant', content: text || (toolCalls.length ? null : ''), ...(toolCalls.length ? { tool_calls: toolCalls } : {}), ...(reasoning ? { reasoning_content: reasoning } : {})
   }, finish_reason: finishReason }] }))
 }
 

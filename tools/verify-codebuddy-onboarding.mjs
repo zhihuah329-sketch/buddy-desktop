@@ -2,11 +2,41 @@ import assert from 'node:assert/strict'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { execFileSync } from 'node:child_process'
 import { startServer } from '../packages/server/src/index.js'
 
 const home = mkdtempSync(join(tmpdir(), 'buddy-onboarding-'))
 const prefix = join(home, 'Roaming', 'npm')
 const binDir = join(prefix, 'node_modules', '@tencent-ai', 'codebuddy-code', 'bin')
+const powershell = join(process.env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+const wordSource = join(home, 'word-source')
+const wordFile = join(home, 'sample.docx')
+mkdirSync(join(wordSource, 'word'), { recursive: true })
+writeFileSync(join(wordSource, 'word', 'document.xml'), '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t>DOCX_RESULT_7424</w:t></w:r></w:p><w:tbl><w:tr><w:tc><w:p><w:r><w:t>TABLE_RESULT_9248</w:t></w:r></w:p></w:tc></w:tr></w:tbl></w:body></w:document>')
+const quotePs = (value) => "'" + value.replaceAll("'", "''") + "'"
+const createWord = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::Open(${quotePs(wordFile)}, [IO.Compression.ZipArchiveMode]::Create)
+try {
+  $writer = [IO.StreamWriter]::new($zip.CreateEntry('word/document.xml').Open())
+  try { $writer.Write([IO.File]::ReadAllText(${quotePs(join(wordSource, 'word', 'document.xml'))})) }
+  finally { $writer.Dispose() }
+} finally { $zip.Dispose() }
+`
+execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', createWord], { windowsHide: true })
+process.env.BUDDY_DOC_TEST_COMMAND = `
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression, System.IO.Compression.FileSystem
+$zip = [IO.Compression.ZipFile]::OpenRead(${quotePs(wordFile)})
+try {
+  $reader = [IO.StreamReader]::new($zip.GetEntry('word/document.xml').Open())
+  try { [xml]$doc = $reader.ReadToEnd() } finally { $reader.Dispose() }
+  $ns = [Xml.XmlNamespaceManager]::new($doc.NameTable)
+  $ns.AddNamespace('w', 'http://schemas.openxmlformats.org/wordprocessingml/2006/main')
+  $doc.SelectNodes('//w:t', $ns) | ForEach-Object { $_.InnerText }
+} finally { $zip.Dispose() }
+`
 Object.assign(process.env, {
   APPDATA: join(home, 'Roaming'),
   LOCALAPPDATA: join(home, 'Local'),
@@ -43,7 +73,26 @@ createInterface({ input: process.stdin }).on('line', (line) => {
     return send({ id, result: {} })
   }
   if (!thoughtLevel) return send({ id, error: { code: -32602, message: 'Thinking config was not sent' } })
-  if (params.prompt[0].text === 'Emit a tool marker.') {
+  if (params.prompt[0].text.includes('REVIEW_JSON_INPUT')) {
+    const text = String.fromCharCode(96, 96, 96) + 'json' + String.fromCharCode(10) + '{"risk":"low","note":"fixture only"}' + String.fromCharCode(10) + String.fromCharCode(96, 96, 96)
+    send({ method: 'session/update', params: { update: {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }
+    } } })
+    return send({ id, result: { stopReason: 'end_turn' } })
+  }
+  if (params.prompt[0].text.includes('Parse attached Word.')) {
+    const text = params.prompt[0].text
+    if (!text.includes('DOCUMENT_SYSTEM_SENTINEL') || !text.includes('DOCUMENT_DEVELOPER_SENTINEL') || !text.includes('"description":{"type":"string"}')) {
+      return send({ id, error: { code: -32602, message: 'Missing instructions or tool schema' } })
+    }
+    const chunks = text.includes('DOCX_RESULT_7424') ? ['Word contents: DOCX_RESULT_7424. Table: TABLE_RESULT_9248.']
+      : ['Preparing document parser. ', 'BUDDY_DSH_', 'TOOL ' + JSON.stringify({name:'functions.pwsh',arguments:{description:'Read Word XML',command:process.env.BUDDY_DOC_TEST_COMMAND,timeoutMs:1000}}) + ' ']
+    for (const text of chunks) send({ method: 'session/update', params: { update: {
+      sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }
+    } } })
+    return send({ id, result: { stopReason: 'end_turn' } })
+  }
+  if (params.prompt[0].text.includes('Emit a tool marker.')) {
     for (const text of ['< | | DS', 'ML | | calls>', '< | | DSML | | invoke>']) {
       send({ method: 'session/update', params: { update: {
         sessionUpdate: 'agent_message_chunk', content: { type: 'text', text }
@@ -122,7 +171,7 @@ try {
   const tool = await prompt('Emit a tool marker.')
   assert.equal(tool.status, 200)
   const toolNotice = await tool.text()
-  assert.match(toolNotice, /启用原生 read 工具/)
+  assert.match(toolNotice, /启用所需工具/)
   assert.doesNotMatch(toolNotice, /DSML|tool_calls/)
   const tools = [{ type: 'function', function: {
     name: 'read', parameters: { type: 'object', properties: { file_path: { type: 'string' } } }
@@ -138,6 +187,36 @@ try {
     { role: 'tool', tool_call_id: call.id, content: 'fixture value: kiwi' }
   ] }).then((res) => res.text())
   assert.match(withResult, /The file says kiwi/)
+  const documentTools = [...tools, { type: 'function', function: {
+    name: 'pwsh', parameters: { type: 'object', properties: {
+      description: { type: 'string' }, command: { type: 'string' }, timeoutMs: { type: 'number' }
+    }, required: ['description', 'command'] }
+  } }]
+  const documentMessages = [
+    { role: 'system', content: 'DOCUMENT_SYSTEM_SENTINEL' },
+    { role: 'developer', content: 'DOCUMENT_DEVELOPER_SENTINEL' },
+    { role: 'user', content: 'Parse attached Word.' }
+  ]
+  const docRequest = await prompt('', { tools: documentTools, messages: documentMessages, stream: false }).then((res) => res.json())
+  const [docCall] = docRequest.choices[0].message.tool_calls
+  assert.equal(docCall.function.name, 'pwsh')
+  assert.deepEqual(JSON.parse(docCall.function.arguments), { description: 'Read Word XML', command: process.env.BUDDY_DOC_TEST_COMMAND, timeoutMs: 1000 })
+  const documentText = execFileSync(powershell, ['-NoProfile', '-NonInteractive', '-Command', JSON.parse(docCall.function.arguments).command], { encoding: 'utf8', windowsHide: true })
+  assert.match(documentText, /DOCX_RESULT_7424/)
+  assert.match(documentText, /TABLE_RESULT_9248/)
+  const docResult = await prompt('', { tools: documentTools, stream: false, messages: [
+    ...documentMessages,
+    { role: 'assistant', content: null, tool_calls: [docCall] },
+    { role: 'tool', tool_call_id: docCall.id, content: documentText }
+  ] }).then((res) => res.json())
+  assert.match(docResult.choices[0].message.content, /Word contents: DOCX_RESULT_7424/)
+  assert.match(docResult.choices[0].message.content, /TABLE_RESULT_9248/)
+  const review = await prompt('REVIEW_JSON_INPUT', { stream: false, response_format: {
+    type: 'json_schema', json_schema: { name: 'fixture', schema: {
+      type: 'object', properties: { risk: { type: 'string', enum: ['low', 'high'] } }, required: ['risk']
+    } }
+  } }).then((res) => res.json())
+  assert.equal(JSON.parse(review.choices[0].message.content).risk, 'low')
   const dsml = await prompt('Read DSML fixture.', { tools }).then((res) => res.text())
   assert.match(dsml, /"finish_reason":"tool_calls"/)
   assert.match(dsml, /notes｜fixture\.txt/)

@@ -228,7 +228,14 @@ function askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking = true
       promptSent = true
       resetIdleTimeout()
       const result = await call('session/prompt', { sessionId: session.sessionId, prompt })
-      if (result.stopReason !== 'end_turn' || !answer.trim()) throw new Error('CodeBuddy ended without a complete reply.')
+      if (result.stopReason !== 'end_turn' || !answer.trim()) {
+        let detail = result._meta?.['codebuddy.ai/errorMessage'] ?? ''
+        try { const parsed = JSON.parse(detail); detail = parsed.data?.details ?? parsed.message ?? detail } catch {}
+        if (/EPERM|EACCES/.test(detail)) throw new Error('CodeBuddy 无法写入本机配置或日志目录。请在当前 Windows 用户下运行，并检查目录写入权限。')
+        if (/quota|credit|余额|额度/i.test(detail)) throw new Error('CodeBuddy 账号当前额度不足，请在官方客户端检查额度。')
+        if (/auth|login|登录/i.test(detail)) throw new Error('CodeBuddy 需要重新登录，请运行 codebuddy 并选择 Chinese Site。')
+        throw new Error(`CodeBuddy 未完成本次请求（${result.stopReason ?? 'unknown'}）。请检查官方客户端的错误提示后重试。`)
+      }
       finish()
     })().catch(finish)
   })

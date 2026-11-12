@@ -146,7 +146,7 @@ Nothing is uploaded. The server binds to `127.0.0.1` only and rejects requests w
 
 在 DSH 添加自定义模型，协议选 **OpenAI Chat Completions**，Base URL 用页面显示的地址（通常为 `http://127.0.0.1:5178/v1`），模型填 `deepseek-v4.1-flash-codebuddy-cn`。输入支持文本和内嵌图片，建议上下文设为 8192 tokens。
 
-当 DSH 提供原生 `read` 工具时，CodeBuddy 可以请求 DSH 读取文本文件。DSH 负责工作区权限，Buddy Desktop 不直接打开模型指定的文件。
+此线路保留系统提示、开发者提示、历史工具调用及结果，并将模型请求转换为 DSH 提供的标准工具调用。发送 `@文件路径` 后，模型可以调用 DSH 的文本读取、搜索或命令工具解析文档。DOCX、PDF、XLSX 等二进制文档需要相应解析器，工具执行及权限确认由 DSH 负责。
 
 Flash 默认开启思考，并通过 `reasoning_content` 流式传递上游实际返回的思考内容。窗口隐藏一分钟后会释放渲染进程，本地转发服务保持运行。
 
