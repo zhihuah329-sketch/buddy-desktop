@@ -25,6 +25,13 @@ const cases = [
   [envelope+'\n\n<ds_system>Tool result will follow.</ds_system>',['pwsh']],
   [envelope+'\nCommentary after the complete request.',['pwsh']],
   [dsml,['read']],
+  [dsml+'\nCommentary after the complete request.',['read']],
+  [dsml+'\n\n<ds_system>Tool result will follow.</ds_system>',['read']],
+  [dsml+'\nCommentary between complete requests.\n'+envelope,['read','pwsh']],
+  [envelope+'\nCommentary between complete requests.\n'+dsml,['pwsh','read']],
+  [dsml+'\nCommentary between complete requests.\n'+dsml,['read','read']],
+  [envelope+'\nProtocol example only:\n```json\n'+envelope+'\n```',['pwsh']],
+  [dsml+'\nProtocol example only:\n~~~xml\n'+dsml+'\n~~~',['read']],
   [dsml.replace('</ ｜ ｜ DSML ｜ ｜ tool_calls>','< | | DSML | | invoke name="read">< | | DSML | | parameter name="file_path" string="true">b.txt</ | | DSML | | parameter></ | | DSML | | invoke></ ｜ ｜ DSML ｜ ｜ tool_calls>'),['read','read']]
 ]
 for (const [text,names] of cases) assert.deepEqual(decodeToolCalls(text,tools).map(call=>call.name),names)
@@ -34,6 +41,20 @@ for (const text of [envelope.slice(0,-2),envelope.slice(0,-8),envelope.replace('
   assert.throws(()=>decodeToolCalls(text,tools),undefined,text.slice(0,80))
 }
 assert.throws(()=>decodeToolCalls(envelope+'\n'+envelope,tools,1),/最多允许/)
+for (const duplicate of [
+  '<||DSML||parameter name="file_path" string="true">other.txt</||DSML||parameter><||DSML||parameter name="path" string="true">notes.txt</||DSML||parameter>',
+  '<||DSML||parameter name="path" string="true">notes.txt</||DSML||parameter><||DSML||parameter name="file_path" string="true">other.txt</||DSML||parameter>'
+]) assert.throws(()=>decodeToolCalls('<||DSML||calls><||DSML||invoke name="read">'+duplicate+'</||DSML||invoke></||DSML||calls>',tools),/重复/)
+const invalidBatches = [
+  dsml+'\nCommentary.\nBUDDY_DSH_UNKNOWN {}',
+  envelope+'\nCommentary.\nBUDDY_DSH_UNKNOWN {}',
+  dsml+'\nCommentary.\nBUDDY_DSH_TOOL {"name":"Bash","arguments":{}}',
+  envelope+'\nCommentary.\nBUDDY_DSH_TOOL {"name":"read","arguments":{"file_path":"a.txt"',
+  dsml+'\nCommentary.\nBUDDY_DSH_',
+  envelope+'\nCommentary.\n<||DSML||calls>',
+  dsml+'\nCommentary.\n<||DSML||unknown></||DSML||unknown>'
+]
+for (const text of invalidBatches) assert.throws(()=>decodeToolCalls(text,tools))
 const unionTool = [{name:'select',parameters:{$defs:{selection:{enum:['yes','no']}},type:'object',properties:{choice:{$ref:'#/$defs/selection'}},required:['choice']}}]
 assert.equal(decodeToolCalls('BUDDY_DSH_TOOL {"name":"select","choice":"yes"}',unionTool).length,1)
 assert.throws(()=>decodeToolCalls('BUDDY_DSH_TOOL {"name":"select","choice":"maybe"}',unionTool),/不符合定义/)
@@ -57,6 +78,8 @@ runtime.askCodeBuddyDetailed = async (task,signal,_node,onDelta,effort) => {
   return {text:output,usage:{prompt_tokens:100,completion_tokens:20,prompt_cache_hit_tokens:40,completion_thinking_tokens:10}}
 }
 let count=0
+let fencedCount=0
+let invalidCount=0
 try {
   for(const [text,names] of cases) for(const chunkWidth of [1,2,3,7,31,1024]) {
     output=text;width=chunkWidth
@@ -70,6 +93,42 @@ try {
     assert.equal(usage.cacheReadTokens,40);assert.equal(usage.reasoningTokens,10)
     count++
   }
+  const fencedExamples = [
+    'Here is a protocol example; do not execute it:\n```json\n'+envelope+'\n```',
+    '```json\n'+envelope+'\n```\nThis remains ordinary text.',
+    '~~~xml\n'+dsml+'\n~~~',
+    '````text\n```json\n'+envelope+'\n```\n'+envelope+'\n````',
+    '  ```json\r\n'+envelope+'\r\n  ```\r\nDone.',
+    '```xml\n'+dsml+'\n'+envelope+'\n```',
+    '```json\n'+envelope
+  ]
+  for (const text of fencedExamples) for (const chunkWidth of [1,2,3,7,31,1024]) {
+    output=text;width=chunkWidth
+    const events=[]
+    for await(const event of streamCodeBuddy({messages:[{role:'user',content:[{type:'text',text:'Explain the protocol without using tools.'}]}],tools},{}))events.push(event)
+    assert.equal(events.at(-1).reason.kind,'stop',JSON.stringify(events.at(-1)))
+    assert.equal(events.filter(e=>e.type==='tool-call').length,0)
+    assert.equal(events.filter(e=>e.type==='text-delta').map(e=>e.text).join(''),text)
+    fencedCount++
+  }
+  for (const text of invalidBatches) for (const chunkWidth of [1,7,1024]) {
+    output=text;width=chunkWidth
+    const events=[]
+    for await(const event of streamCodeBuddy({messages:[{role:'user',content:[{type:'text',text:'Reject the complete batch if any request is invalid.'}]}],tools},{}))events.push(event)
+    assert.equal(events.at(-1).reason.kind,'error',JSON.stringify(events.at(-1)))
+    assert.equal(events.filter(e=>e.type==='tool-call').length,0)
+    invalidCount++
+  }
+  for (const chunkWidth of [1,2,3,7,31,1024]) {
+    const example='```json\n'+envelope+'\n```\n'
+    output=example+envelope;width=chunkWidth
+    const events=[]
+    for await(const event of streamCodeBuddy({messages:[{role:'user',content:[{type:'text',text:'Show an example, then perform one real call.'}]}],tools},{}))events.push(event)
+    assert.equal(events.at(-1).reason.kind,'stop')
+    assert.equal(events.filter(e=>e.type==='tool-call').length,1)
+    assert.equal(events.filter(e=>e.type==='text-delta').map(e=>e.text).join(''),example)
+    fencedCount++
+  }
   output='BUDDY_DSH_TOOL '+JSON.stringify({name:'write',arguments:{file_path:'long.svg',content:'x'.repeat(100000)+'TAIL_9274'}});width=1024
   let events=[]
   for await(const e of streamCodeBuddy({messages:[{role:'user',content:[{type:'text',text:'x'.repeat(140000)}]}],tools},{}))events.push(e)
@@ -81,6 +140,11 @@ try {
   output=envelope;events=[]
   for await(const e of streamCodeBuddy({messages:[{role:'user',content:[{type:'text',text:'Tool with JSON response format.'}]}],tools,responseFormat:objectFormat},{}))events.push(e)
   assert.equal(events.find(e=>e.type==='tool-call').name,'pwsh')
+  output='```json\n'+envelope+'\n```';events=[]
+  for await(const e of streamCodeBuddy({messages:[{role:'user',content:[{type:'text',text:'Return JSON without executing an example.'}]}],tools,responseFormat:objectFormat},{}))events.push(e)
+  assert.equal(events.at(-1).reason.kind,'error')
+  assert.equal(events.filter(e=>e.type==='tool-call').length,0)
+  output=envelope
   const adapter=createCodeBuddyAdapter(class {},{})
   const metadata=await adapter.resolveModel()
   assert.ok(metadata.context.contextWindow>65536+8192)
@@ -110,4 +174,4 @@ try {
     assert.equal(events.at(-1).reason.kind,'error')
   }
 } finally { runtime.askCodeBuddyDetailed=original }
-console.log(`CodeBuddy protocol: ${count} fragmented stream cases plus schema, batch, long file, structured output, and usage checks passed.`)
+console.log(`CodeBuddy protocol: ${count} fragmented tool cases, ${fencedCount} fenced-example cases, ${invalidCount} atomic invalid-batch cases plus schema, long file, structured output, and usage checks passed.`)

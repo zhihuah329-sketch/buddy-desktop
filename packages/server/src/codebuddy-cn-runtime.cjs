@@ -17,6 +17,20 @@ function installationState() { return { ...installState } }
 function requestState() { return lastRequest ? { ...lastRequest, supportedEfforts: [...lastRequest.supportedEfforts] } : undefined }
 function recordFailure(failure) { if (lastRequest) lastRequest.failure = { ...failure, at: Date.now() } }
 
+function cancelledError(promptSubmitted = false) {
+  return Object.assign(new Error('CodeBuddy 请求已取消（CODEBUDDY_CANCELLED）。'), {
+    code: 'CODEBUDDY_CANCELLED', promptSubmitted, retryable: false
+  })
+}
+
+function stderrDiagnostic(line) {
+  // Match complete runtime diagnostics, never arbitrary words in logged prompts.
+  if (/^FATAL ERROR: (?:Reached heap limit |Ineffective mark-compacts near heap limit )?Allocation failed - JavaScript heap out of memory$/.test(line)) return 'NODE_HEAP_OOM'
+  if (/^Error(?: \[ERR_MODULE_NOT_FOUND\])?: Cannot find (?:module|package) ['"]/.test(line)) return 'NODE_MODULE_MISSING'
+  if (/^Error: (?:EACCES: permission denied|EPERM: operation not permitted),/.test(line)) return 'NODE_PERMISSION'
+  if (/^Error: (?:read ECONNRESET|connect E(?:CONNREFUSED|TIMEDOUT)|getaddrinfo E(?:NOTFOUND|AI_AGAIN))(?:\s|$)/.test(line)) return 'NODE_NETWORK'
+}
+
 function selectThoughtLevel(option, effort) {
   const requested = effort === false || effort === 'none' || effort === 'off' ? 'disabled'
     : effort === true || effort === undefined ? 'high' : effort
@@ -134,7 +148,7 @@ function askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking = true
       cwd,
       env: { ...process.env, DISABLE_AUTOUPDATER: '1' },
       windowsHide: true,
-      stdio: ['pipe', 'pipe', 'ignore']
+      stdio: ['pipe', 'pipe', 'pipe']
     })
     child.once('close', () => {
       try { rmSync(cwd, { recursive: true, force: true }) } catch { /* temp cleanup */ }
@@ -148,28 +162,97 @@ function askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking = true
     let finished = false
     let promptSent = false
     let configuration
-    const transportError = (message) => Object.assign(new Error(message), { retryable: !promptSent })
-    const abort = () => finish(new Error('CodeBuddy 请求已取消。'))
+    const requestCreditCents = new Map()
+    let reportedCreditCents = 0
+    function mergeReportedCredits(snapshot) {
+      if (!configuration || !promptSent || !snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) return
+      let inspected = 0
+      for (const requestId in snapshot) {
+        if (++inspected > 512) break
+        if (!Object.hasOwn(snapshot, requestId) || !requestId || requestId.length > 256) continue
+        const credit = snapshot[requestId]
+        if (typeof credit !== 'number' || !Number.isFinite(credit) || credit < 0) continue
+        const cents = Math.round(credit * 100)
+        if (!Number.isSafeInteger(cents)) continue
+        const previous = requestCreditCents.get(requestId)
+        if (previous !== undefined && cents <= previous) continue
+        if (previous === undefined && requestCreditCents.size >= 256) continue
+        const total = reportedCreditCents + (cents - (previous ?? 0))
+        if (!Number.isSafeInteger(total)) continue
+        requestCreditCents.set(requestId, cents)
+        reportedCreditCents = total
+      }
+      // Official ACP snapshots are cumulative per request ID. Merge by maximum;
+      // never add repeated frames or infer credits from tokens/currency fields.
+      if (requestCreditCents.size > 0) configuration.reportedCredits = reportedCreditCents / 100
+    }
+    let diagnostic
+    let stderrLine = ''
+    let stderrOverflow = false
+    const transportError = (code, message, details = {}) => Object.assign(new Error(message), {
+      code, retryable: !promptSent, promptSubmitted: promptSent, ...details
+    })
+    function exitFailure(exitCode, exitSignal) {
+      let code = exitSignal ? 'CODEBUDDY_PROCESS_SIGNAL' : 'CODEBUDDY_PROCESS_EXIT'
+      let detail = '子进程在完成 ACP 请求前退出，未取得明确原因'
+      if (diagnostic === 'NODE_HEAP_OOM') { code = 'CODEBUDDY_CLI_OOM'; detail = '子进程报告 JavaScript 堆内存耗尽' }
+      else if (diagnostic === 'NODE_MODULE_MISSING') { code = 'CODEBUDDY_CLI_MODULE_MISSING'; detail = '子进程报告缺少 Node.js 模块，请修复 CodeBuddy CLI 安装' }
+      else if (diagnostic === 'NODE_PERMISSION') { code = 'CODEBUDDY_CLI_PERMISSION'; detail = '子进程报告文件访问权限错误' }
+      else if (diagnostic === 'NODE_NETWORK') { code = 'CODEBUDDY_CLI_NETWORK'; detail = '子进程报告网络连接错误' }
+      const windowsStatus = Number.isInteger(exitCode) ? exitCode >>> 0 : undefined
+      if (!diagnostic && windowsStatus === 0xc0000005) { code = 'CODEBUDDY_CLI_CRASH'; detail = '子进程发生 Windows 访问冲突' }
+      else if (!diagnostic && windowsStatus === 0xc0000017) { code = 'CODEBUDDY_CLI_OOM'; detail = 'Windows 报告子进程内存分配失败' }
+      const status = `exitCode=${exitCode ?? 'unknown'}, signal=${exitSignal ?? 'none'}, promptSubmitted=${promptSent}`
+      return transportError(code, `CodeBuddy ${detail}（${code}; ${status}）。${promptSent ? '本次请求已提交，未自动重放。' : '本次请求尚未提交。'}`, {
+        exitCode: exitCode ?? null, signal: exitSignal ?? null, ...(diagnostic ? { diagnostic } : {})
+      })
+    }
+    function finishStderrLine() {
+      if (!stderrOverflow && !diagnostic) diagnostic = stderrDiagnostic(stderrLine.replace(/\r$/, ''))
+      stderrLine = ''
+      stderrOverflow = false
+    }
+    child.stderr.on('data', (chunk) => {
+      // Always drain stderr. Keep at most one short line in memory and never
+      // retain, return or log raw output, which can contain private requests.
+      if (finished) return
+      const parts = chunk.toString('utf8').split('\n')
+      for (let i = 0; i < parts.length; i++) {
+        if (!stderrOverflow) {
+          if (stderrLine.length + parts[i].length <= 512) stderrLine += parts[i]
+          else { stderrLine = ''; stderrOverflow = true }
+        }
+        if (i < parts.length - 1) finishStderrLine()
+      }
+    })
+    child.stderr.on('end', finishStderrLine)
+    child.stderr.on('error', () => {})
+    const abort = () => finish(cancelledError(promptSent))
     let idleTimeout
     function resetIdleTimeout() {
       clearTimeout(idleTimeout)
-      idleTimeout = setTimeout(() => finish(transportError('CodeBuddy 长时间没有响应，请检查网络后重试。')), promptSent ? 120_000 : 30_000)
+      idleTimeout = setTimeout(() => finish(transportError('CODEBUDDY_IDLE_TIMEOUT', 'CodeBuddy 长时间没有响应（CODEBUDDY_IDLE_TIMEOUT）。')), promptSent ? 120_000 : 30_000)
     }
     resetIdleTimeout()
-    const timeout = setTimeout(() => finish(new Error('CodeBuddy 请求超过 10 分钟，请缩短任务后重试。')), 600_000)
+    const timeout = setTimeout(() => finish(Object.assign(new Error('CodeBuddy 请求超过 10 分钟，请缩短任务后重试。'), { code: 'CODEBUDDY_TIMEOUT' })), 600_000)
 
     function finish(error) {
       if (finished) return
       finished = true
       clearTimeout(timeout)
       clearTimeout(idleTimeout)
+      stderrLine = ''
       signal?.removeEventListener('abort', abort)
       for (const request of pending.values()) request.reject(error ?? new Error('CodeBuddy connection closed.'))
       pending.clear()
       reader.close()
       child.stdin.destroy()
       if (child.exitCode === null && child.signalCode === null) child.kill()
-      if (error) reject(error)
+      if (error) {
+        error.code ??= 'CODEBUDDY_REQUEST_FAILED'
+        error.promptSubmitted ??= promptSent
+        reject(error)
+      }
       else resolve({ text: answer.trim(), reasoning, usage })
     }
 
@@ -185,9 +268,10 @@ function askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking = true
       })
     }
 
-    child.on('error', () => finish(transportError('无法启动 CodeBuddy，请检查 CLI 安装。')))
-    child.stdin.on('error', () => finish(transportError('CodeBuddy 连接已断开。')))
-    child.on('close', () => finish(transportError('CodeBuddy 提前退出，请检查国内站登录和网络。')))
+    child.on('error', () => finish(transportError('CODEBUDDY_START_FAILED', '无法启动 CodeBuddy（CODEBUDDY_START_FAILED），请检查 CLI 安装。')))
+    child.stdin.on('error', () => finish(transportError('CODEBUDDY_TRANSPORT_CLOSED', 'CodeBuddy ACP 输入连接已断开（CODEBUDDY_TRANSPORT_CLOSED）。')))
+    reader.on('error', () => finish(transportError('CODEBUDDY_TRANSPORT_CLOSED', 'CodeBuddy ACP 输出连接已断开（CODEBUDDY_TRANSPORT_CLOSED）。')))
+    child.on('close', (exitCode, exitSignal) => finish(exitFailure(exitCode, exitSignal)))
     signal?.addEventListener('abort', abort, { once: true })
     if (signal?.aborted) return abort()
 
@@ -210,7 +294,10 @@ function askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking = true
             onDelta?.('reasoning', text)
           }
         }
-        if (update?.sessionUpdate === 'usage_update' && update._meta?.usage) usage = update._meta.usage
+        if (update?.sessionUpdate === 'usage_update') {
+          if (update._meta?.usage) usage = update._meta.usage
+          mergeReportedCredits(update._meta?.['codebuddy.ai/requestCredits'])
+        }
       } else if (message.method && message.id !== undefined) {
         if (message.method === 'session/request_permission') {
           send({ id: message.id, result: { outcome: { outcome: 'cancelled' } } })
@@ -275,10 +362,11 @@ function askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking = true
 }
 
 async function askCodeBuddyDetailed(task, signal, nodeExecutable, onDelta, thinking) {
-  signal?.throwIfAborted()
+  if (signal?.aborted) throw cancelledError()
   try { return await askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking) }
   catch (error) {
-    if (!error.retryable || signal?.aborted) throw error
+    if (signal?.aborted) throw cancelledError(error.promptSubmitted)
+    if (!error.retryable) throw error
     return askCodeBuddyOnce(task, signal, nodeExecutable, onDelta, thinking)
   }
 }

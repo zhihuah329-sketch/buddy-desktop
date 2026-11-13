@@ -47,7 +47,8 @@ Dark and light themes, plus a follow-the-system mode.
 
 Download `BuddyDesktop-Setup.exe` from [Releases](../../releases) and run it. It
 installs per-user under `%LOCALAPPDATA%\Programs\BuddyDesktop`, adds Start-menu and
-desktop shortcuts, and registers an uninstaller. No Node installation is required.
+desktop shortcuts, and registers an uninstaller. The desktop interface starts
+without Node.js; the CodeBuddy route requires Node.js for the official CLI.
 
 ## Use it for model calls
 
@@ -65,10 +66,14 @@ standard, flattened, string-encoded and DSML tool envelopes, validates arguments
 against the caller's JSON Schema, and validates an entire batch before forwarding
 any calls. Incomplete argument values are rejected. Only a missing outer envelope
 brace can be completed. JSON response schemas are also checked before returning.
+Tool protocol examples inside Markdown code fences remain ordinary answer text.
+Unexpected CLI exits report an error category and process exit status without
+exposing raw diagnostic output. A request is never retried automatically after it
+has been submitted to the CLI.
 
 Run `npm run verify:codebuddy` on Windows for the account-free regression suite:
 fragmented tool/answer/reasoning streams, tool schemas, batches, long files,
-structured results, simulated login, installation and SSE framing. GitHub Actions
+structured results, CLI exits and cancellation, simulated login, installation and SSE framing. GitHub Actions
 runs it on relevant changes. For a local history audit, run
 `node tools/audit-codebuddy-sessions.mjs "<DSH sessions directory>" "<CodeBuddy traces directory>"`.
 The audit reports aggregate counts and never executes or uploads a conversation.
@@ -166,7 +171,9 @@ Nothing is uploaded. The server binds to `127.0.0.1` only and rejects requests w
 
 在 PowerShell 运行页面上的登录命令，选择 **Log in via Chinese Site**，在浏览器完成登录，再回到应用点「测试线路」。此线路使用官方 CLI 的登录会话，不需要 WorkBuddy 桌面版或账号池。
 
-在 DSH 添加自定义模型，协议选 **OpenAI Chat Completions**，Base URL 用页面显示的地址（通常为 `http://127.0.0.1:5178/v1`），模型填 `deepseek-v4.1-flash-codebuddy-cn`。输入支持文本和内嵌图片，建议上下文设为 8192 tokens。
+同一国内账号的 WorkBuddy 和 CodeBuddy 积分共享，详见[官方定价说明](https://www.codebuddy.cn/docs/workbuddy/Pricing)。此线路按 CLI 当前登录账号结算；CodeBuddy 页面显示最近请求由官方 CLI 报告的积分消耗，重复通知不会重复累计，未收到时显示「尚未报告」。「额度与用量」汇总已导入的 WorkBuddy 账号，尚未核对 CLI 登录身份，且本机调用记录暂不包含此线路。余额需要点击「查询最新额度」更新，本地请求次数和旧余额都不能证明没有扣分。
+
+在 DSH 添加自定义模型，协议选 **OpenAI Chat Completions**，Base URL 用页面显示的地址（通常为 `http://127.0.0.1:5178/v1`），模型填 `deepseek-v4.1-flash-codebuddy-cn`。输入支持文本和内嵌图片，`contextWindow` 配置为 `1000000`，与此线路的模型定义一致。
 
 此线路保留系统提示、开发者提示、历史工具调用及结果，并将模型请求转换为 DSH 提供的标准工具调用。发送 `@文件路径` 后，模型可以调用 DSH 的文本读取、搜索或命令工具解析文档。DOCX、PDF、XLSX 等二进制文档需要相应解析器，工具执行及权限确认由 DSH 负责。
 

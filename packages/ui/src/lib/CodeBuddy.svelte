@@ -30,7 +30,7 @@
   <header>
     <span class="eyebrow">CODEBUDDY CODE</span>
     <h1>CodeBuddy 国内站</h1>
-    <p>使用官方 CLI 登录后，即可在 DSH 中调用 DeepSeek V4.1 Flash。无需安装或导入 WorkBuddy。</p>
+    <p>使用官方 CLI 登录后，即可在 DSH 中调用 DeepSeek V4.1 Flash。无需安装或导入 WorkBuddy，调用按 CLI 当前登录账号结算。</p>
   </header>
   <section>
     <h2>安装与登录</h2>
@@ -40,6 +40,7 @@
       <li>回到这里刷新状态，再点「测试线路」。测试会发出一次短模型请求。</li>
     </ol>
     <p class:good={route?.installed} aria-live="polite">{installingNow ? '正在全局安装官方 CLI，请稍候…' : route?.installed ? `已检测到 CodeBuddy Code${route.version ? ' ' + route.version : ''}，登录状态请以线路测试为准。` : route?.error ?? '正在检测本机 CLI…'}</p>
+    <p>同一账号在 CodeBuddy 国内站和 WorkBuddy 共享积分。「额度与用量」尚未核对 CLI 当前登录账号，显示的余额不能直接当作这条线路的账单。</p>
     {#if !route?.installed}
       <button disabled={installingNow || !route} onclick={install}>{installingNow ? '正在安装…' : '重试安装 CodeBuddy'}</button>
     {/if}
@@ -52,6 +53,7 @@
         <dt>请求的推理强度</dt><dd>{effortLabels[route.lastRequest.requestedEffort] ?? route.lastRequest.requestedEffort}</dd>
         <dt>客户端确认的强度</dt><dd>{effortLabels[route.lastRequest.effectiveEffort] ?? route.lastRequest.effectiveEffort}</dd>
         <dt>模型支持的档位</dt><dd>{route.lastRequest.supportedEfforts.map(value => effortLabels[value] ?? value).join('、') || '未确认'}</dd>
+        <dt>最近请求已报告消耗</dt><dd>{typeof route.lastRequest.reportedCredits === 'number' && Number.isFinite(route.lastRequest.reportedCredits) ? `${route.lastRequest.reportedCredits.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} 积分` : '官方 CLI 尚未报告'}</dd>
       </dl>
       {#if route.lastRequest.failure}<p role="status">最近请求失败：{route.lastRequest.failure.message} <code>{route.lastRequest.failure.code}</code></p>{/if}
     {/if}

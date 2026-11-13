@@ -93,8 +93,8 @@
 <div class="page">
   <header class="page-head">
     <div>
-      <h1>额度与用量</h1>
-      <span class="sub">查看 WorkBuddy 套餐积分和本机调用记录</span>
+      <h1>WorkBuddy 额度与用量</h1>
+      <span class="sub">已导入账号的积分汇总与本机 WorkBuddy 调用记录</span>
     </div>
     <button class="refresh" disabled={busy} onclick={onRefresh}>
       {busy ? '正在查询…' : '查询最新额度'}
@@ -106,7 +106,7 @@
   {:else}
     <section class="quota">
       <div class="quota-head">
-        <strong>国内版 · 本周期积分</strong>
+        <strong>已导入 WorkBuddy 国内账号 · 本周期积分</strong>
         <span aria-live="polite">
           {#if busy}正在查询账号额度
           {:else if domestic.quotaAt}更新于 {timeText(domestic.quotaAt)} · 已读取 {domestic.quotaKnown}/{domestic.accounts} 个账号
@@ -122,6 +122,8 @@
       {#if domestic.quotaKnown > 0 && domestic.quotaKnown < domestic.accounts}
         <div class="quota-note">当前汇总仅包含成功读取的账号。其他账号的状态见下方。</div>
       {/if}
+      <div class="quota-note">余额汇总来自已导入并成功查询的 WorkBuddy 国内账号，尚未核对 CodeBuddy CLI 当前登录账号。点击「查询最新额度」会向官方查询余额，页面自动刷新仅展示最近快照。</div>
+      <div class="quota-note">调用统计暂不包含 CodeBuddy CLI。0 次请求或快照余额未变，不能说明没有消耗共享积分；实际扣减以 CLI 同一账号的官方用量明细为准。</div>
     </section>
 
     {#if activity !== null && activity.total > 0}
@@ -137,7 +139,7 @@
           <span class="split-label">输出</span>
           <b>{tokensText(activity.tokens.reply)}</b>
         </span>
-        <span class="split-note">按字符估算 · 上游不返回真实 token 数</span>
+        <span class="split-note">WorkBuddy 调用统计 · token 按字符估算</span>
       </div>
     {/if}
 
@@ -149,7 +151,7 @@
         {#if activity?.total > 0}<span class="tab-count">{activity.total}</span>{/if}
       </button>
       <button class="tab" class:active={view === 'accounts'} onclick={() => (view = 'accounts')}>
-        账号用量
+        已导入账号
       </button>
     </div>
 
@@ -157,7 +159,7 @@
       {#if activity === null || activity.total === 0}
         <div class="empty">
           还没有调用记录。<br />
-          <span class="empty-hint">通过接入地址发起一次模型调用后，这里会显示用的哪个账号、哪个模型、多少字符。</span>
+          <span class="empty-hint">通过 WorkBuddy 线路调用后，这里会显示对应账号、模型和估算用量。CodeBuddy CLI 调用暂不计入。</span>
         </div>
       {:else}
         <!-- Summary by model -->

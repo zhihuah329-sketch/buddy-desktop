@@ -2,10 +2,39 @@ import Ajv from 'ajv'
 import Ajv2020 from 'ajv/dist/2020.js'
 
 export const MAX_TOOL_CHARS = 2 * 1024 * 1024
-const OPEN = String.raw`<\s*\|\s*\|\s*DSML\s*\|\s*\|\s*`
-const CLOSE = String.raw`<\s*/\s*\|\s*\|\s*DSML\s*\|\s*\|\s*`
+const OPEN = String.raw`<\s*[|｜]\s*[|｜]\s*DSML\s*[|｜]\s*[|｜]\s*`
+const CLOSE = String.raw`<\s*/\s*[|｜]\s*[|｜]\s*DSML\s*[|｜]\s*[|｜]\s*`
 
 function fail(code, message) { throw Object.assign(new Error(message), { code }) }
+
+export function advanceMarkdown(context, text) {
+  let offset = 0
+  for (let newline = text.indexOf('\n'); newline >= 0; newline = text.indexOf('\n', offset)) {
+    const line = (context.line + text.slice(offset, newline)).replace(/\r$/, '')
+    const fence = /^[\t ]*(`{3,}|~{3,})(.*)$/.exec(line)
+    if (!context.fenceChar && fence && (fence[1][0] === '~' || !fence[2].includes('`'))) {
+      context.fenceChar = fence[1][0]
+      context.fenceLength = fence[1].length
+    } else if (context.fenceChar && fence && fence[1][0] === context.fenceChar &&
+        fence[1].length >= context.fenceLength && !fence[2].trim()) {
+      context.fenceChar = undefined
+      context.fenceLength = undefined
+    }
+    context.line = ''
+    offset = newline + 1
+  }
+  context.line += text.slice(offset)
+}
+
+export function findControlOpening(text, pattern, context = { line: '' }) {
+  const state = { ...context }
+  let offset = 0
+  for (const match of text.matchAll(pattern)) {
+    advanceMarkdown(state, text.slice(offset, match.index))
+    offset = match.index
+    if (!state.fenceChar && /^[\t ]*$/.test(state.line)) return match
+  }
+}
 
 export function schemaValidator(schema) {
   if (schema === undefined) return () => true
@@ -74,8 +103,7 @@ function normalizeCall(input, tools) {
 }
 
 function dsmlCalls(text) {
-  const normalized = text.replace(/(<\s*\/?\s*)[|｜]\s*[|｜](\s*DSML\s*)[|｜]\s*[|｜]/gi, '$1||$2||')
-  const envelope = new RegExp(String.raw`^${OPEN}((?:tool_)?calls)\s*>([\s\S]*?)${CLOSE}\1\s*>\s*(?:\x60{3})?\s*$`, 'i').exec(normalized)
+  const envelope = new RegExp(String.raw`^${OPEN}((?:tool_)?calls)\s*>([\s\S]*?)${CLOSE}\1\s*>`, 'i').exec(text)
   if (!envelope) fail('CODEBUDDY_TOOL_JSON', 'DSML 工具请求不完整。')
   const invoke = new RegExp(String.raw`\s*${OPEN}invoke\s+name="([\w.-]+)"\s*>([\s\S]*?)${CLOSE}invoke\s*>`, 'iy')
   const parameter = new RegExp(String.raw`\s*${OPEN}parameter\s+name="([\w.-]+)"\s+string="(true|false)"\s*>([\s\S]*?)${CLOSE}parameter\s*>`, 'iy')
@@ -90,8 +118,9 @@ function dsmlCalls(text) {
     while (params) {
       parameter.lastIndex = 0
       const field = parameter.exec(params)
-      if (!field || Object.hasOwn(args, field[1])) fail('CODEBUDDY_TOOL_ARGUMENTS', 'DSML 参数无效或重复。')
+      if (!field) fail('CODEBUDDY_TOOL_ARGUMENTS', 'DSML 参数无效或重复。')
       const key = /^read$/i.test(match[1]) && field[1] === 'path' ? 'file_path' : field[1]
+      if (Object.hasOwn(args, key)) fail('CODEBUDDY_TOOL_ARGUMENTS', 'DSML 参数无效或重复。')
       try { args[key] = field[2].toLowerCase() === 'true' ? field[3] : JSON.parse(field[3]) }
       catch { fail('CODEBUDDY_TOOL_ARGUMENTS', 'DSML 参数中的 JSON 无效。') }
       params = params.slice(parameter.lastIndex).trim()
@@ -100,16 +129,19 @@ function dsmlCalls(text) {
     rest = rest.slice(invoke.lastIndex).trim()
   }
   if (!calls.length) fail('CODEBUDDY_TOOL_JSON', 'DSML 没有工具调用。')
-  return calls
+  return { calls, end: envelope[0].length }
 }
 
 export function decodeToolCalls(text, tools, maxCalls = 32) {
   if (text.length > MAX_TOOL_CHARS) fail('CODEBUDDY_TOOL_LIMIT', '工具请求超过 2 MiB 字符限制。')
   let rest = text.trim().replace(/^```(?:json|xml)?\s*/i, '').replace(/\s*```$/, '').trim()
-  let calls = []
-  if (/^<\s*[|｜]/.test(rest)) calls = dsmlCalls(rest)
-  else {
-    while (rest) {
+  const calls = []
+  while (rest) {
+    if (/^<\s*[|｜]/.test(rest)) {
+      const parsed = dsmlCalls(rest)
+      calls.push(...parsed.calls)
+      rest = rest.slice(parsed.end).trim()
+    } else {
       const marker = /^(BUDDY_DSH_TOOL|BUDDY_DSH_READ)\s+/.exec(rest)
       if (marker) rest = rest.slice(marker[0].length)
       if (!/^[{[]/.test(rest)) fail('CODEBUDDY_TOOL_JSON', '工具请求包含无法解析的额外内容。')
@@ -117,10 +149,10 @@ export function decodeToolCalls(text, tools, maxCalls = 32) {
       const value = marker?.[1] === 'BUDDY_DSH_READ' ? { name: 'read', arguments: parsed.value } : parsed.value
       calls.push(...(Array.isArray(value) ? value : Array.isArray(value.tool_calls) ? value.tool_calls : [value]))
       rest = rest.slice(parsed.end).trim()
-      if (rest && !/^(?:BUDDY_DSH_|[\[{,}\]])/.test(rest)) {
-        const next = /(?:^|\n)[\t ]*BUDDY_DSH_(?:READ|TOOL)\s/.exec(rest)
-        rest = next ? rest.slice(next.index).trimStart() : ''
-      }
+    }
+    if (rest && !/^(?:BUDDY_DSH_|<\s*[|｜]|[\[{,}\]])/.test(rest)) {
+      const next = findControlOpening(rest, /BUDDY_DSH_|<\s*[|｜]\s*[|｜]\s*DSML/gi)
+      rest = next ? rest.slice(next.index).trimStart() : ''
     }
   }
   if (calls.length > maxCalls) fail('CODEBUDDY_TOOL_LIMIT', `本次请求最多允许 ${maxCalls} 个工具调用。`)

@@ -1,14 +1,15 @@
 import bridge from './codebuddy-cn-runtime.cjs'
 import { Readable } from 'node:stream'
-import { decodeToolCalls, structuredResponse, MAX_TOOL_CHARS } from './codebuddy-cn-tools.mjs'
+import { decodeToolCalls, structuredResponse, MAX_TOOL_CHARS, advanceMarkdown, findControlOpening } from './codebuddy-cn-tools.mjs'
 
 const READ_MARKER = 'BUDDY_DSH_READ '
 const TOOL_MARKER = 'BUDDY_DSH_TOOL '
 const DSML_OPENING = /<\s*[|｜]\s*[|｜]\s*DSML\s*[|｜]\s*[|｜]\s*(?:tool_)?calls\s*>/i
 const CONTROL_OPENING = /BUDDY_DSH_(?:READ|TOOL)\s|<\s*[|｜]\s*[|｜]\s*DSML\s*[|｜]\s*[|｜]\s*(?:tool_)?calls\s*>/gi
-function lineBoundary(text, index, atLineStart) {
-  const newline=text.lastIndexOf('\n',index-1)
-  return (newline>=0||atLineStart) && /^[\t ]*$/.test(text.slice(newline+1,index))
+function controlPosition(text, index, context) {
+  const state = { ...context }
+  advanceMarkdown(state, text.slice(0, index))
+  return !state.fenceChar && /^[\t ]*$/.test(state.line)
 }
 
 async function taskFrom({ messages, purpose, system, signal, tools, responseFormat }, attachments) {
@@ -93,7 +94,7 @@ export async function* streamCodeBuddy(options, attachments) {
     const structured = ['json_object', 'json_schema'].includes(options.responseFormat?.type)
     let structuredText = ''
     let checkingRead = true
-    let atLineStart = true
+    const markdown = { line: '' }
     for await (const { type, text: fragment } of deltas) {
       signal.throwIfAborted()
       let text = fragment
@@ -117,29 +118,27 @@ export async function* streamCodeBuddy(options, attachments) {
         }
         text = pendingText + text
         pendingText = ''
-        const opening = [...text.matchAll(CONTROL_OPENING)].find(match=>lineBoundary(text,match.index,atLineStart))
+        const opening = findControlOpening(text, CONTROL_OPENING, markdown)
         if (opening) {
           if (opening[0].startsWith('BUDDY_')) { readRequest=text.slice(opening.index);checkingRead=true }
           else dsmlRequest=text.slice(opening.index)
           text=text.slice(0,opening.index)
         } else if (dsmlRequest === undefined) {
           const suffixIndex = text.lastIndexOf('B')
-          if (suffixIndex >= 0 && lineBoundary(text,suffixIndex,atLineStart) && [READ_MARKER,TOOL_MARKER].some(marker=>marker.startsWith(text.slice(suffixIndex)))) {
+          if (suffixIndex >= 0 && controlPosition(text,suffixIndex,markdown) && [READ_MARKER,TOOL_MARKER].some(marker=>marker.startsWith(text.slice(suffixIndex)))) {
             pendingText = text.slice(suffixIndex)
             text = text.slice(0, suffixIndex)
           }
         }
         const lastOpening = dsmlRequest === undefined ? text.lastIndexOf('<') : -1
-        if (lastOpening >= 0 && lineBoundary(text,lastOpening,atLineStart) && text.length - lastOpening <= 96 && !text.slice(lastOpening).includes('>')) {
+        if (lastOpening >= 0 && controlPosition(text,lastOpening,markdown) && text.length - lastOpening <= 96 && !text.slice(lastOpening).includes('>')) {
           const suffix = text.slice(lastOpening).replace(/\s/g, '').replaceAll('｜', '|').toUpperCase()
           if (['<||DSML||CALLS>', '<||DSML||TOOL_CALLS>'].some((marker) => marker.startsWith(suffix))) {
             pendingText = text.slice(lastOpening)
             text = text.slice(0, lastOpening)
           }
         }
-        const newline=text.lastIndexOf('\n')
-        if (newline>=0) atLineStart=/^[\t ]*$/.test(text.slice(newline+1))
-        else if (/[^\t ]/.test(text)) atLineStart=false
+        advanceMarkdown(markdown, text)
         if (!text) continue
       }
       if (active?.type !== type) {
@@ -153,7 +152,7 @@ export async function* streamCodeBuddy(options, attachments) {
     let candidate = readRequest.trimStart()
     let isToolRequest = checkingRead && [READ_MARKER, TOOL_MARKER].some((marker) => candidate.startsWith(marker))
     if (structured) {
-      const raw = structuredText.trim().replace(/^```(?:json|xml)?\s*/i, '').replace(/\s*```$/, '').trim()
+      const raw = structuredText.trim()
       if ([READ_MARKER, TOOL_MARKER].some(marker => raw.startsWith(marker))) { candidate = raw; isToolRequest = true }
       else if (DSML_OPENING.test(raw) && raw.startsWith('<')) dsmlRequest = raw
     }
